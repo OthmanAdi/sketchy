@@ -1,0 +1,9 @@
+node_modules/
+.dev/
+out/
+*.partial*
+.DS_Store
+Thumbs.db
+assets/src/_build/
+docs/src/gallery/
+dist/

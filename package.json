@@ -1,0 +1,12 @@
+{
+  "name": "sketchy-skill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hand-drawn pencil-sketchbook slides, charts, explainers, videos and generative sound for AI agents.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

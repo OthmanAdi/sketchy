@@ -1,0 +1,21 @@
+{
+  "name": "sketchy",
+  "interface": {
+    "displayName": "sketchy"
+  },
+  "plugins": [
+    {
+      "name": "sketchy",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/OthmanAdi/sketchy.git",
+        "ref": "main"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Design"
+    }
+  ]
+}

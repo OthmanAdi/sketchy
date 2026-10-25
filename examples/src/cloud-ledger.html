@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en" class="sk" data-theme="night">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Cloud Ledger · Q3</title>
+<meta name="description" content="A night-ledger deck made with sketchy: a cloud bill explained to the CFO. Invented figures for a fictional company.">
+<link rel="stylesheet" href="../../skills/sketchy/engine/sketchy.css">
+<style>
+  .slip-big { font-size: 27px; padding: 30px 34px 26px; transform: rotate(.8deg); position: relative; }
+  .slip-big .sk-stamp { position: absolute; right: 30px; top: 22px; }
+  .gold { color: var(--sk-gold); }
+  .stamps { display: grid; grid-template-columns: repeat(2, max-content); gap: 64px 110px; justify-content: center; align-items: center; padding: 24px; }
+</style>
+</head>
+<body class="sk">
+<main class="sk-deck" data-seed="cloud-ledger-q3" data-transition="page" data-music="ledger">
+
+  <section class="sk-slide" data-layout="cover" data-duration="5" data-notes="Ledger number one. What we paid for the cloud this quarter, and why.">
+    <div class="sk-cover" data-cover="oxblood">
+      <div class="sk-cover-inner">
+        <div class="sk-label">
+          <span class="sk-label-title">The Cloud Ledger</span>
+          <span class="sk-label-sub">Q3 · Northwind Parcel Co. · Ledger No. 1</span>
+        </div>
+        <span class="sk-door" role="button" tabindex="0">Open the ledger</span>
+      </div>
+      <div class="sk-cover-foot" style="color:rgba(238,240,244,.95)">If found, please return to finance. Reward: a smaller bill.</div>
+    </div>
+  </section>
+
+  <section class="sk-slide" data-layout="letter" data-notes="The brief: who it is for and what is inside.">
+    <div class="sk-sheet" data-sk="sheet">
+      <div class="sk-letter-kicker">Registered letter R 0001</div>
+      <h2>for the CFO</h2>
+      <p class="sk-letter-row"><b>To:</b> one CFO, who asked a short question.</p>
+      <p class="sk-letter-row"><b>Contents:</b> why the cloud bill rose <span class="sk-figure">17.6%</span>, and the two lines that fix it.</p>
+      <p class="sk-letter-hint">Gold is what we paid. Blue is last quarter. Dashed is the plan.</p>
+      <div class="sk-letter-actions"><span class="sk-btn is-accent" data-sk="button">Off we go</span></div>
+    </div>
+  </section>
+
+  <section class="sk-slide" data-layout="big-number" data-notes="The headline figure, with its benchmark and its owner.">
+    <span class="sk-kicker">Cloud bill, July to September</span>
+    <div class="sk-number"><span data-count>€48,210</span></div>
+    <p class="sk-number-label">that is <span class="sk-figure">+17.6%</span> over the plan of <span class="sk-figure">€41,000</span></p>
+    <p class="sk-number-bench">Q2 was <span class="sk-figure">€39,870</span>. The difference is almost all one line.</p>
+  </section>
+
+  <section class="sk-slide" data-layout="ledger" data-notes="The bill, printed line by line. Split by who caused each cost.">
+    <div class="sk-stack" style="--gap:18px">
+      <span class="sk-kicker">The postage slip</span>
+      <h2>Egress did it</h2>
+      <p class="sk-line">Data leaving the cloud cost <span class="sk-figure">€9,940</span>, up from <span class="sk-figure">€2,310</span>.</p>
+      <p class="sk-line">The new tracking page sends every photo at full size.</p>
+    </div>
+    <div class="slip-big sk-doc sk-receipt sk-pinked">
+      <div data-reveal="print">
+        <div class="sk-receipt-brand">Northwind · postage slip · Q3</div>
+        <div class="sk-receipt-row"><span>Compute</span><span>24,880</span></div>
+        <div class="sk-receipt-row"><span>Storage</span><span>8,120</span></div>
+        <div class="sk-receipt-row"><span>Egress</span><span>9,940</span></div>
+        <div class="sk-receipt-row"><span>Support plan</span><span>5,270</span></div>
+        <div class="sk-receipt-row is-total"><span>IN ALL, €</span><span>48,210</span></div>
+        <div class="sk-receipt-row is-bench"><span>Q2, €</span><span>39,870</span></div>
+      </div>
+      <span class="sk-stamp" data-slam style="--delay:1300ms">Overrun</span>
+    </div>
+  </section>
+
+  <section class="sk-slide" data-layout="compare" data-notes="Two fixes, each with its saving and its owner.">
+    <header><span class="sk-kicker">Two lines fix it</span><h2>What we change in November</h2></header>
+    <div class="sk-sheet" data-sk="sheet">
+      <h3>Resize photos on upload</h3>
+      <p>Owner: the tracking team.</p>
+      <p>Saves about <span class="sk-figure">€6,800</span> a quarter.</p>
+      <p class="sk-fine">Estimate from 30 days of logs; dashed until it shows up on a real bill.</p>
+      <span class="sk-stamp is-unearned">Saved</span>
+    </div>
+    <div class="sk-sheet" data-sk="sheet">
+      <h3>Drop the support tier</h3>
+      <p>Owner: platform.</p>
+      <p>Saves <span class="sk-figure">€3,100</span> a quarter.</p>
+      <p class="sk-fine">Two tickets in Q3. The cheaper tier answers in 24 hours.</p>
+      <span class="sk-stamp is-unearned">Saved</span>
+    </div>
+  </section>
+
+  <section class="sk-slide" data-layout="board" data-notes="Verdicts. Earned stamps are inked, the rest are outlines until next quarter.">
+    <div class="sk-corner"><span class="sk-corner-title">Ledger No. 1 · the verdicts</span><span class="sk-corner-task">Inked means earned. Outlines wait for Q4.</span></div>
+    <div class="stamps" style="margin-top:250px">
+      <span class="sk-stamp is-big" data-slam style="--delay:300ms">Overrun</span>
+      <span class="sk-stamp is-big is-green" data-slam style="--delay:640ms">No outages</span>
+      <span class="sk-stamp is-big is-unearned">On budget</span>
+      <span class="sk-stamp is-big is-unearned">Egress fixed</span>
+    </div>
+  </section>
+
+  <section class="sk-slide" data-layout="end" data-notes="Close: what was decided, and when we check again.">
+    <div class="sk-postcard" data-reveal>
+      <div class="sk-stack" style="--gap:12px">
+        <span class="sk-kicker">Ledger No. 1 · closed</span>
+        <h2 style="font-size:64px">Next check: 15 January</h2>
+        <p class="sk-line">If both fixes land, Q4 comes in near <span class="sk-figure">€38,300</span>.</p>
+      </div>
+      <div class="sk-stack" style="justify-items:end">
+        <svg data-sketch="postage-stamp" viewBox="0 0 140 110" style="width:190px" aria-hidden="true"></svg>
+        <span class="sk-stamp" data-slam style="--delay:800ms">Signed for</span>
+      </div>
+    </div>
+  </section>
+
+</main>
+<script src="../../skills/sketchy/engine/sketchy.js"></script>
+<script src="../../skills/sketchy/engine/sketches.js"></script>
+<script src="../../skills/sketchy/engine/sketchy-charts.js"></script>
+<script src="../../skills/sketchy/engine/sketchy-sound.js"></script>
+<script src="../../skills/sketchy/engine/sketchy-deck.js"></script>
+<script>SketchyDeck.mount();</script>
+</body>
+</html>

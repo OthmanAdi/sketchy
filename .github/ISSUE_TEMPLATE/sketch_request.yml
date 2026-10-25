@@ -1,0 +1,55 @@
+name: Sketch or chart request
+description: Ask for a new sketch, chart type, layout or export option.
+title: "[request] "
+labels: ["enhancement", "sketch-request"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        sketchy takes small, strict additions. A request that names a real use and shows a reference sketch gets a faster answer.
+        Do not attach art, code or sound from another project unless its license allows redistribution under MIT.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What do you want added
+      options:
+        - A sketch (a small picture of a thing)
+        - A chart type
+        - A slide layout
+        - An artifact template
+        - An export option
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      description: A short lowercase name, for example `pencil-case` or `slope-chart`.
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What it is for
+      description: The deck, report or explainer where you would use it, and who reads it.
+    validations:
+      required: true
+  - type: textarea
+    id: reference
+    attributes:
+      label: Reference
+      description: A photo of your own pencil drawing, a hand sketch, or a description. Attach images by dragging them into this box.
+  - type: textarea
+    id: data
+    attributes:
+      label: Data shape (charts only)
+      description: The columns or JSON you would give it, and what must never be misrepresented.
+      render: text
+  - type: checkboxes
+    id: pr
+    attributes:
+      label: Contribution
+      options:
+        - label: I can open a pull request for this.
+        - label: I read CONTRIBUTING.md and the request fits its rules.

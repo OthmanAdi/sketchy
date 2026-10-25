@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://othmanadi.github.io/sketchy/sitemap.xml

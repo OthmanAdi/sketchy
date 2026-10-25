@@ -1,0 +1,50 @@
+# sketchy
+
+> sketchy is an open-source (MIT) agent skill that makes hand-drawn pencil-sketchbook slide decks, lessons, one-page reports, charts, decision boards, postcards and explainer videos with generative music, as self-contained HTML files that export to PDF, PPTX and MP4. It works with Claude Code, Codex, Cursor, Gemini CLI and any agent that reads SKILL.md skills. Install with `npx skills add OthmanAdi/sketchy`.
+
+> Version 0.1.0, updated 2026-10-25. MIT license. By Ahmad Othman Ammar Adi (github.com/OthmanAdi).
+
+The look: graphite on blue-gray paper, one red pencil for the thing that matters, colored-pencil hatching for data, Caveat handwriting for words and Courier Prime for every number. Lines boil at 10 frames per second, pages turn on their spine, stamps slam. Charts start at zero, print units and sources, and keep exact values in a hidden table.
+
+## Facts
+
+- One self-contained HTML file per artifact; exports PDF, PPTX (faithful or editable) and MP4
+- 9 commands: deck, explain, report, chart, board, postcard, video, audit, theme
+- 109 hand-drawn sketches, 17 chart types, 14 slide layouts, 6 papers, 4 generative music moods
+- Needs a browser to view; Node 18+ to install; Playwright for checks and exports; FFmpeg for video
+- No API key and no network calls of its own; the agent you already use does the writing
+
+## FAQ
+
+- Is it an Excalidraw or rough.js alternative? It is not built on either; it has its own seeded pencil engine with no dependencies.
+- Can it make an editable PowerPoint? Yes, `export-pptx.mjs --mode editable` writes real text boxes over the drawn art.
+- Can it match a brand? Yes, a theme is one file of color tokens; put it in `~/.sketchy/themes/`.
+- Does it invent numbers? It is told not to: figures come from the user, with sources, benchmarks and units, and charts keep exact values in a hidden table.
+
+## Start here
+
+- [README](https://github.com/OthmanAdi/sketchy/blob/main/README.md): what it makes, install, examples, limits
+- [Install for every agent](https://github.com/OthmanAdi/sketchy/blob/main/INSTALL.md): Claude Code plugin, npx skills, Codex, Cursor, Gemini CLI and more
+- [SKILL.md](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/SKILL.md): the workflow an agent follows
+
+## Examples
+
+- [Board update deck](https://othmanadi.github.io/sketchy/examples/quarterly-post.html): 12 slides with a cover, big number, plan versus record, a bill and a decision board
+- [Lesson](https://othmanadi.github.io/sketchy/examples/moon-lesson.html): why the Moon changes shape, picture first with the math in the margin
+- [One-page report](https://othmanadi.github.io/sketchy/examples/q3-one-pager.html): figures with benchmarks, printable on A4
+- [Night ledger deck](https://othmanadi.github.io/sketchy/examples/cloud-ledger.html): a cloud bill explained, chalk on night-blue paper
+- [Decision board](https://othmanadi.github.io/sketchy/examples/switch-board.html): keep or remove, saved in the browser
+- [Postcard](https://othmanadi.github.io/sketchy/examples/release-postcard.html): a release card with stamp and postmark
+- [Chart sheet](https://othmanadi.github.io/sketchy/examples/churn-charts.html): before and after churn with a slope chart and a line chart against plan
+
+## Reference
+
+- [Style in exact values](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/style-dna.md)
+- [Slide layouts and storyboards](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/slides.md)
+- [Charts and honest numbers](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/charts.md)
+- [Lessons and explainers](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/education.md)
+- [Reports, bills and verdicts](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/business.md)
+- [Sound and generative music](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/sound.md)
+- [Exports: PDF, PPTX, MP4](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/export.md)
+- [Sketch catalog](https://github.com/OthmanAdi/sketchy/blob/main/skills/sketchy/references/sketches.md)
+- [Architecture](https://github.com/OthmanAdi/sketchy/blob/main/docs/architecture.md)

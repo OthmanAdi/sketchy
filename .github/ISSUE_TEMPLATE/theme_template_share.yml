@@ -1,0 +1,61 @@
+name: Share a theme or template
+description: Show a theme or template you made, or propose one for the repository.
+title: "[share] "
+labels: ["theme-template"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Themes are token files and templates are starting HTML built from the engine's classes. See CONTRIBUTING.md for how to make either one.
+        Share only work that is yours, or that you may release under MIT. Fonts need a license that allows redistribution and embedding.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What are you sharing
+      options:
+        - A theme
+        - A template
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Name
+      description: Lowercase kebab-case, for example `blueprint-night`.
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What it looks like and what it is for
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots
+      description: A deck or page in your theme next to the default theme, or the filled template at 1920 x 1080 and 390 x 844.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files or link
+      description: Paste the CSS or HTML in a code block, attach a zip, or link a gist or repository.
+    validations:
+      required: true
+  - type: textarea
+    id: lint
+    attributes:
+      label: Lint result
+      description: Output of `node skills/sketchy/scripts/lint.mjs` on a file that uses it.
+      render: text
+  - type: checkboxes
+    id: license
+    attributes:
+      label: License
+      options:
+        - label: I made this myself, or I may release it, and I agree that it can be distributed under the MIT license.
+          required: true
+        - label: Any font it uses is under a license that allows redistribution and embedding, and I named it above.

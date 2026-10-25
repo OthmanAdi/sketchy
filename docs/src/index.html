@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" class="sk" data-theme="day">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>sketchy: agent skill for hand-drawn slides and charts</title>
+<meta name="description" content="Open-source agent skill for Claude Code, Codex, Cursor and Gemini CLI. Makes hand-drawn slides, charts, lessons and explainer videos. Exports PDF, PPTX, MP4.">
+<meta name="robots" content="index,follow,max-image-preview:large">
+<meta name="author" content="Ahmad Othman Ammar Adi">
+<link rel="canonical" href="https://othmanadi.github.io/sketchy/">
+<meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
+<meta property="og:site_name" content="sketchy">
+<meta property="og:url" content="https://othmanadi.github.io/sketchy/">
+<meta property="og:title" content="sketchy: hand-drawn slides and charts for AI agents">
+<meta property="og:description" content="Pencil-sketchbook decks, lessons, one-pagers, charts and explainer videos with generative music. Looks sketchy. The numbers are real.">
+<meta property="og:image" content="https://othmanadi.github.io/sketchy/social-preview.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="A slate cloth sketchbook labelled sketchy next to hand-drawn slides and a pencil-hatched bar chart">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="sketchy: hand-drawn slides and charts for AI agents">
+<meta name="twitter:description" content="Pencil-sketchbook decks, lessons, charts and explainer videos as self-contained HTML. Looks sketchy. The numbers are real.">
+<meta name="twitter:image" content="https://othmanadi.github.io/sketchy/social-preview.jpg">
+<meta name="twitter:image:alt" content="A slate cloth sketchbook labelled sketchy next to hand-drawn slides and a pencil-hatched bar chart">
+<meta name="theme-color" content="#c3c8d1">
+<link rel="icon" type="image/svg+xml" href="https://othmanadi.github.io/sketchy/favicon.svg">
+<script type="application/ld+json">
+{"@context": "https://schema.org", "@graph": [{"@type": "SoftwareApplication", "name": "sketchy", "applicationCategory": "DesignApplication", "operatingSystem": "Windows, macOS, Linux", "softwareVersion": "0.1.0", "dateModified": "2026-10-25", "description": "An open-source agent skill that makes hand-drawn pencil-sketchbook slides, charts, lessons, reports and explainer videos as self-contained HTML, exporting PDF, PPTX and MP4.", "url": "https://othmanadi.github.io/sketchy/", "image": "https://othmanadi.github.io/sketchy/social-preview.jpg", "isAccessibleForFree": true, "license": "https://opensource.org/licenses/MIT", "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}, "author": {"@id": "https://github.com/OthmanAdi"}}, {"@type": "SoftwareSourceCode", "name": "sketchy", "codeRepository": "https://github.com/OthmanAdi/sketchy", "programmingLanguage": "JavaScript", "license": "https://opensource.org/licenses/MIT"}, {"@type": "Person", "@id": "https://github.com/OthmanAdi", "name": "Ahmad Othman Ammar Adi", "url": "https://github.com/OthmanAdi"}]}
+</script>
+<link rel="stylesheet" href="../../skills/sketchy/engine/sketchy.css">
+<style>
+  .site { position: relative; z-index: 1; max-width: 1180px; margin: 0 auto; padding: 0 16px 96px; display: grid; grid-template-columns: minmax(0, 1fr); gap: clamp(40px, 7vw, 88px); }
+  .hero { min-height: min(86vh, 760px); margin: 16px 0 0; }
+  .hero .sk-label { min-width: min(620px, 82vw); }
+  .hero .sk-label-title { font-size: clamp(64px, 11vw, 132px); }
+  .hero .lede { font: 600 clamp(22px, 2.6vw, 32px)/1.15 var(--sk-font-hand); color: #eef0f4; max-width: 30ch; }
+  .install { display: grid; gap: 12px; justify-items: center; text-align: center; }
+  .cmd { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; font: 700 clamp(18px, 2.2vw, 26px)/1.2 var(--sk-font-mono); }
+  .cmd code { padding: 12px 18px; }
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr)); gap: 28px; }
+  .card { display: grid; gap: 10px; text-decoration: none; color: inherit; }
+  .card img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; object-position: top; display: block; box-shadow: 0 2px 3px rgba(var(--sk-shadow), .2), 0 16px 28px -14px rgba(var(--sk-shadow), .55); transition: transform 160ms var(--sk-ease); }
+  .card:hover img { transform: translateY(-2px) rotate(-.8deg); }
+  .card h3 { font-size: 30px; }
+  .steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr)); gap: 26px; counter-reset: s; }
+  .steps > div { display: grid; gap: 6px; align-content: start; counter-increment: s; }
+  .steps h3::before { content: counter(s) '. '; color: var(--sk-red-ink); }
+  .steps svg[data-sketch] { width: 150px; }
+  .center { text-align: center; display: grid; gap: 10px; justify-items: center; }
+  footer.site-foot { text-align: center; display: grid; gap: 6px; }
+</style>
+</head>
+<body class="sk">
+<svg class="sk-specks" data-specks="sketchy-site" data-specks-count="110" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
+<main class="site">
+
+  <section class="sk-cover hero" data-cover="slate">
+    <div class="sk-cover-inner">
+      <h1 class="sk-label" style="margin:0"><span class="sk-label-title">sketchy</span><span class="sk-label-sub">hand-drawn slides, charts and explainers, made by your AI agent</span></h1>
+      <p class="lede">Looks sketchy. The numbers are real.</p>
+      <a class="sk-door" href="#examples">See the examples</a>
+    </div>
+    <div class="sk-cover-foot">If found, please return to the repository. Reward: a star.</div>
+  </section>
+
+  <section class="install" data-reveal>
+    <p class="sk-line" style="max-width:62ch">sketchy is an open-source agent skill. Ask Claude Code, Codex, Cursor or Gemini CLI for a deck, a lesson, a report or a chart, and it draws one in pencil: graphite on blue-gray paper, the key number in red and every figure in typewriter type. The result is one HTML file that works offline and exports to PDF, PowerPoint and MP4.</p>
+    <h2>One line, any agent</h2>
+    <div class="cmd"><code class="sk-doc" id="cmd">npx skills add OthmanAdi/sketchy</code><button class="sk-btn" data-sk="button" id="copy" type="button">Copy</button></div>
+    <p class="sk-line" style="max-width:60ch">Then ask in plain words: “make a 10-slide board update from this spreadsheet”, “explain how DNS works for a class of 15-year-olds”, “turn these numbers into a one-pager for the CFO”.</p>
+    <p class="sk-fine">Claude Code, Codex, Cursor, Gemini CLI, Windsurf, Cline and more. <a href="https://github.com/OthmanAdi/sketchy/blob/main/INSTALL.md">Every install route</a>.</p>
+  </section>
+
+  <section id="examples" class="sk-stack" style="--gap:22px">
+    <div class="center"><h2>What it makes</h2><p class="sk-line">Every example is one HTML file. Open it, press <span class="sk-mono">o</span> for the overview and <span class="sk-mono">s</span> for sound.</p></div>
+    <div class="gallery">
+      <a class="card" href="examples/quarterly-post.html" data-reveal><img src="gallery/deck.jpg" alt="Slate cloth sketchbook cover with a paper label reading Quarterly Post"><h3>Board update deck</h3><span>12 slides: big number, plan versus record, the bill, a decision board.</span></a>
+      <a class="card" href="examples/moon-lesson.html" data-reveal><img src="gallery/lesson.jpg" alt="Lesson page explaining why the Moon changes shape with pencil drawings of its phases"><h3>Lesson</h3><span>Picture first, numbered steps, the math in the margin.</span></a>
+      <a class="card" href="examples/q3-one-pager.html" data-reveal><img src="gallery/report.jpg" alt="One-page report with typewriter figures and a hatched bar chart"><h3>One-page report</h3><span>Figures with benchmarks, plan versus record, prints on A4.</span></a>
+      <a class="card" href="examples/cloud-ledger.html" data-reveal><img src="gallery/ledger.jpg" alt="Night ledger slide with a printed postage slip and an OVERRUN stamp"><h3>Night ledger deck</h3><span>A cloud bill explained: gold for what was paid, receipts that print.</span></a>
+      <a class="card" href="examples/switch-board.html" data-reveal><img src="gallery/board.jpg" alt="Decision board of plates with sketches and keep or remove buttons"><h3>Decision board</h3><span>Keep or remove, one click each, copied out as text.</span></a>
+      <a class="card" href="examples/release-postcard.html" data-reveal><img src="gallery/postcard.jpg" alt="Postcard announcing version 2.0 with a stamp and a postmark"><h3>Postcard</h3><span>Release notes, thank-yous and certificates.</span></a>
+    </div>
+  </section>
+
+  <section class="sk-stack" style="--gap:22px">
+    <div class="center"><h2>How a build runs</h2></div>
+    <div class="steps">
+      <div data-reveal><svg data-sketch="thought-cloud" viewBox="0 0 140 110" aria-hidden="true"></svg><h3>Brief</h3><p>The one sentence to remember, the decision afterwards, where each number comes from.</p></div>
+      <div data-reveal><svg data-sketch="signpost" viewBox="0 0 140 110" aria-hidden="true"></svg><h3>Deal a style</h3><p>Paper, cover, pencils and opening page, never the same as your last ten.</p></div>
+      <div data-reveal><svg data-sketch="pencil" viewBox="0 0 140 110" aria-hidden="true"></svg><h3>Draw</h3><p>Templates, more than 100 sketches, charts from specs, sound from a seed.</p></div>
+      <div data-reveal><svg data-sketch="magnifier-doc" viewBox="0 0 140 110" aria-hidden="true"></svg><h3>Check by looking</h3><p>A linter, screenshots of every page, and a reviewer that has not seen the code.</p></div>
+    </div>
+  </section>
+
+  <section class="sk-split" data-reveal>
+    <div class="sk-stack">
+      <h2>Sound, if you want it</h2>
+      <p>Off until the viewer turns it on. Pencil scratches, page turns, rubber stamps and generative music, all synthesised in the browser. The same deck always gets the same piece, so the video soundtrack matches the live one.</p>
+    </div>
+    <div class="sk-stack">
+      <h2>Your paper, your pencils</h2>
+      <p>Six papers ship: day sketchbook, night ledger, kraft, blueprint, graph and cartridge. Drop your own theme or template into <span class="sk-mono">~/.sketchy/</span> and sketchy uses it first.</p>
+    </div>
+  </section>
+
+  <footer class="site-foot sk-fine">
+    <span>Version 0.1.0 · updated 25 October 2026 · MIT licensed · <a href="https://github.com/OthmanAdi/sketchy">github.com/OthmanAdi/sketchy</a> · <a href="llms.txt">llms.txt</a></span>
+  </footer>
+</main>
+<script src="../../skills/sketchy/engine/sketchy.js"></script>
+<script src="../../skills/sketchy/engine/sketches.js"></script>
+<script>
+  Sketchy.mount();
+  document.getElementById('copy').addEventListener('click', function () {
+    var b = this, t = document.getElementById('cmd').textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () {
+      b.lastChild.textContent = 'Copied'; setTimeout(function () { b.lastChild.textContent = 'Copy'; }, 1500);
+    }, function () { window.prompt('Copy:', t); });
+  });
+</script>
+</body>
+</html>

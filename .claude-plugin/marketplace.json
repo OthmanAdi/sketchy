@@ -1,0 +1,31 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "sketchy",
+  "description": "Hand-drawn pencil-sketchbook slides, charts, explainers, business reports, postcards and short videos for Claude Code.",
+  "owner": {
+    "name": "OthmanAdi",
+    "url": "https://github.com/OthmanAdi"
+  },
+  "plugins": [
+    {
+      "name": "sketchy",
+      "source": "./",
+      "description": "Makes hand-drawn pencil-sketchbook slides, charts, explainers, business reports, postcards and short videos with generative sound as self-contained HTML. Exports PDF, PPTX and MP4. Looks sketchy. The numbers are real.",
+      "version": "0.1.0",
+      "category": "design",
+      "tags": [
+        "hand-drawn",
+        "sketch",
+        "slides",
+        "presentation",
+        "charts",
+        "data-visualization",
+        "explainer",
+        "sketchnote",
+        "whiteboard",
+        "pencil"
+      ],
+      "skills": ["./skills/sketchy"]
+    }
+  ]
+}

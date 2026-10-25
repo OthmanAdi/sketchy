@@ -1,0 +1,33 @@
+{
+  "name": "sketchy",
+  "displayName": "sketchy",
+  "version": "0.1.0",
+  "description": "Hand-drawn pencil-sketchbook slides, charts, explainers, business reports, postcards and short videos with generative sound, as self-contained HTML. Looks sketchy. The numbers are real.",
+  "author": {
+    "name": "OthmanAdi",
+    "url": "https://github.com/OthmanAdi"
+  },
+  "homepage": "https://github.com/OthmanAdi/sketchy",
+  "repository": "https://github.com/OthmanAdi/sketchy",
+  "license": "MIT",
+  "keywords": [
+    "hand-drawn",
+    "sketch",
+    "slides",
+    "presentation",
+    "charts",
+    "data-visualization",
+    "explainer",
+    "sketchnote",
+    "whiteboard",
+    "excalidraw-style",
+    "pencil",
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "pptx",
+    "pdf",
+    "video",
+    "generative-music"
+  ]
+}

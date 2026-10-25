@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en" class="sk" data-theme="day">
+<head>
+<meta charset="utf-8">
+<title>sketchy banner</title>
+<link rel="stylesheet" href="../../skills/sketchy/engine/sketchy.css">
+<style>
+  /* Rendered by assets/src/render.mjs at 1280x640 (social preview) and
+     1280x400 (README banner, ?wide). Source of truth for both images. */
+  html, body { margin: 0; width: 1280px; height: 640px; overflow: hidden; }
+  html.wide, html.wide body { height: 400px; }
+  body.sk { position: relative; min-height: 0; padding: 0; background-attachment: scroll; }
+  .board { position: absolute; inset: 0; display: grid; grid-template-columns: 560px 1fr; }
+  .cover { position: relative; margin: 34px 0 34px 34px; border-radius: 14px; min-height: 0; }
+  .cover::after { left: 89%; }
+  html.wide .cover { margin: 22px 0 22px 26px; }
+  .cover .sk-label { min-width: 0; width: 390px; padding: 34px 26px 26px; }
+  html.wide .cover .sk-label { width: 380px; padding: 22px 22px 18px; }
+  .cover .sk-label-title { font-size: 104px; line-height: .9; }
+  html.wide .cover .sk-label-title { font-size: 96px; }
+  .cover .sk-label-sub { font-size: 25px; }
+  .cover .sk-cover-inner { padding: 0 70px 0 22px; gap: 22px; }
+  .cover .tagline { font: 700 46px/1.05 var(--sk-font-hand); color: #f4f5f8; text-align: center; max-width: 400px; }
+  html:not(.wide) .cover .sk-label-sub { display: none; }
+  html.wide .cover .tagline { font-size: 24px; }
+  .pages { position: relative; }
+  .page { position: absolute; background: var(--sk-paper); box-shadow: 0 2px 3px rgba(var(--sk-shadow), .2), 0 18px 34px -14px rgba(var(--sk-shadow), .55); overflow: hidden; }
+  .page::before { content: ''; position: absolute; inset: 0; background: var(--sk-paper-texture); opacity: 1; pointer-events: none; }
+  .p1 { left: 46px; top: 58px; width: 420px; height: 236px; transform: rotate(-3deg); }
+  .p2 { left: 300px; top: 230px; width: 380px; height: 260px; transform: rotate(2.2deg); }
+  .p3 { left: 70px; top: 330px; width: 300px; height: 250px; transform: rotate(-1deg); }
+  html.wide .p1 { left: 22px; top: 40px; width: 356px; height: 214px; }
+  html.wide .p2 { left: 396px; top: 104px; width: 296px; height: 216px; }
+  html.wide .big { font-size: 52px; }
+  html.wide .p3 { display: none; }
+  .page svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .big { position: absolute; left: 0; right: 0; top: 64px; text-align: center; font: 700 64px/1 var(--sk-font-mono); color: var(--sk-figure); letter-spacing: -.03em; }
+  html.wide .big { font-size: 56px; top: 56px; }
+  .big-label { position: absolute; left: 0; right: 0; top: 140px; text-align: center; font: 600 25px/1 var(--sk-font-hand); }
+  html.wide .big-label { top: 124px; font-size: 22px; }
+  .kicker { position: absolute; left: 0; right: 0; top: 30px; text-align: center; font: 600 15px/1 var(--sk-font-hand); letter-spacing: .12em; text-transform: uppercase; }
+  .stampA { position: absolute; right: 26px; bottom: 30px; font-size: 22px; }
+  .stampB { position: absolute; right: 44px; top: 34px; font-size: 20px; }
+  html.wide .stampB { right: 30px; top: 22px; }
+  .sky { position: absolute; inset: 0; width: 100%; height: 100%; }
+</style>
+</head>
+<body class="sk">
+<svg class="sky" data-specks="banner" data-specks-count="70" viewBox="0 0 1280 640" preserveAspectRatio="xMidYMid slice" aria-hidden="true"></svg>
+<div class="board">
+  <section class="sk-cover cover" data-cover="slate">
+    <div class="sk-cover-inner">
+      <div class="sk-label"><span class="sk-label-title">sketchy</span><span class="sk-label-sub">a sketchbook skill for agents</span></div>
+      <div class="tagline">Looks sketchy. The numbers are real.</div>
+    </div>
+  </section>
+  <div class="pages">
+    <div class="page p1"><span class="kicker">parcels delivered in Q3</span><div class="big">1,240,600</div><div class="big-label">up <span class="sk-figure">+18.4%</span>, on time <span data-sk="circle">97.1%</span></div></div>
+    <div class="page p2"><svg id="chart" viewBox="0 0 380 260" aria-hidden="true"></svg></div>
+    <div class="page p3"><svg id="moon" viewBox="0 0 300 250" aria-hidden="true"></svg></div>
+    <span class="sk-stamp is-big stampB" style="position:absolute">Hand-drawn</span>
+  </div>
+</div>
+<script src="../../skills/sketchy/engine/sketchy.js"></script>
+<script src="../../skills/sketchy/engine/sketches.js"></script>
+<script>
+  if (location.search.indexOf('wide') > -1) document.documentElement.classList.add('wide');
+  Sketchy.config.boil = false;
+  Sketchy.mount();
+  var C = Sketchy.tokens();
+  Sketchy.variants(document.getElementById('chart'), function (p) {
+    var base = 212, x0 = 52, vals = [118, 132, 151, 176], w = 50;
+    p.line(x0 - 10, base, 350, base, { width: 1.4 });
+    p.line(x0 - 10, base, x0 - 10, 40, { width: 1.1, opacity: .7 });
+    vals.forEach(function (v, i) {
+      var x = x0 + i * 74, h = v - 10;
+      p.rect(x, base - h, w, h, { fill: i === 3 ? C.red : C.blue, width: 1.3 });
+      p.text(x + w / 2, base - h - 10, String(v) + 'k', { anchor: 'middle', mono: true, size: 15 });
+      p.text(x + w / 2, base + 22, ['Q1', 'Q2', 'Q3', 'Q4'][i], { anchor: 'middle', size: 17 });
+    });
+    p.line(x0 - 10, base - 145, 350, base - 145, { stroke: C.red, dash: '5 5', width: 1.3, passes: 1 });
+    p.text(60, base - 152, 'plan', { note: true, size: 17 });
+    p.text(190, 30, 'Revenue, € k', { anchor: 'middle', size: 21 });
+  }, { seed: 'banner-chart' });
+  Sketchy.variants(document.getElementById('moon'), function (p) {
+    p.circle(150, 125, 70, { fill: C.yellow });
+    for (var i = 0; i < 14; i++) { var a = i / 14 * Math.PI * 2; p.line(150 + Math.cos(a) * 42, 125 + Math.sin(a) * 42, 150 + Math.cos(a) * (i % 2 ? 50 : 58), 125 + Math.sin(a) * (i % 2 ? 50 : 58), { stroke: C.orange, width: 1.5, passes: 1 }); }
+    p.ellipse(150, 125, 230, 150, { width: 1, passes: 1, opacity: .5, rough: .5 });
+    p.circle(265, 125, 26, { fill: C.blue });
+    p.circle(42, 160, 22, { fill: C.rose });
+    p.arrow(230, 50, 262, 105, { width: 1.2 });
+    p.text(196, 44, 'now!', { note: true, size: 20 });
+    p.text(150, 238, 'half lit, always', { anchor: 'middle', size: 18 });
+  }, { seed: 'banner-moon' });
+</script>
+</body>
+</html>

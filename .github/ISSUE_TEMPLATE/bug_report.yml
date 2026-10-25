@@ -1,0 +1,101 @@
+name: Bug report
+description: Something drew wrong, a script failed, or an export came out broken.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Attach the HTML file and a screenshot of the problem.
+        GitHub does not accept `.html` attachments, so zip the file first. Security problems go through private vulnerability reporting, not this form.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to reproduce
+      description: The prompt you gave the agent, or the exact script command you ran.
+      placeholder: |
+        Prompt: "Make a six-slide sketchbook deck about ..."
+        or: node skills/sketchy/scripts/export-pdf.mjs deck.html
+    validations:
+      required: true
+  - type: textarea
+    id: attachments
+    attributes:
+      label: HTML file and screenshot
+      description: Attach the HTML file (zipped) and a screenshot of the problem. Drag the files into this box.
+    validations:
+      required: true
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      options:
+        - Claude Code
+        - Codex
+        - Cursor
+        - Gemini CLI
+        - Windsurf
+        - Cline
+        - OpenCode
+        - Amp
+        - Goose
+        - GitHub Copilot
+        - claude.ai
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: agent-version
+    attributes:
+      label: Agent version and model
+      placeholder: "Claude Code 2.1.310, claude-sonnet-5-5"
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows 11
+        - Windows 10
+        - macOS
+        - Linux
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: install
+    attributes:
+      label: How you installed sketchy
+      placeholder: "Claude Code plugin, npx skills add, manual copy, ..."
+  - type: input
+    id: sketchy-version
+    attributes:
+      label: sketchy version
+      description: From `.claude-plugin/plugin.json` or the release tag.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Run `node skills/sketchy/scripts/doctor.mjs` (or `/sketchy:doctor` in Claude Code) and paste the result.
+      render: text
+  - type: textarea
+    id: console
+    attributes:
+      label: Console errors or script output
+      description: Anything the browser console or the script printed.
+      render: text
