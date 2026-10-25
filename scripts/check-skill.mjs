@@ -12,7 +12,7 @@
 //   3. Every manifest parses as JSON and agrees on name and version.
 //   4. Every relative link in README.md, INSTALL.md, SKILL.md and skills/sketchy/references
 //      resolves to an existing file (case-sensitive, like GitHub).
-//   5. Every `@./path` import in AGENTS.md, GEMINI.md and CLAUDE.md resolves.
+//   5. Every `@./path` import in AGENTS.md, GEMINI.md and .claude/CLAUDE.md resolves.
 //   6. All text files are valid UTF-8.
 //
 // Each failure is printed with its fix. Exit code 1 when anything fails.
@@ -412,7 +412,7 @@ const REQUIRED = [
   ['SECURITY.md', 'Add the security policy.'],
   ['CONTRIBUTORS.md', 'Add the contributors list.'],
   ['AGENTS.md', 'Add the agents file.'],
-  ['CLAUDE.md', 'Add the repository rules for Claude Code.'],
+  ['.claude/CLAUDE.md', 'Add the repository rules for Claude Code (in .claude/, so the plugin root has no CLAUDE.md).'],
   ['GEMINI.md', 'Add the Gemini context file.'],
   ['.claude-plugin/plugin.json', 'Add the Claude Code plugin manifest.'],
   ['.claude-plugin/marketplace.json', 'Add the Claude Code marketplace manifest.'],
@@ -638,8 +638,8 @@ check('relative links resolve', () => {
   }
 });
 
-check('@ imports in AGENTS.md, GEMINI.md, CLAUDE.md resolve', () => {
-  for (const file of ['AGENTS.md', 'GEMINI.md', 'CLAUDE.md']) {
+check('@ imports in AGENTS.md, GEMINI.md, .claude/CLAUDE.md resolve', () => {
+  for (const file of ['AGENTS.md', 'GEMINI.md', '.claude/CLAUDE.md']) {
     if (!existsExact(abs(file))) continue;
     for (const { target, line } of extractImports(read(file))) {
       const r = resolveTarget(file, target);

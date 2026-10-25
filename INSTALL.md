@@ -8,6 +8,9 @@ The skill writes self-contained HTML, so a browser is all you need to view the r
 
 | Agent | Command | How to ask for it |
 |---|---|---|
+| Claude Code (plugin, one step) | `/plugin install sketchy --marketplace OthmanAdi/sketchy` (Claude Code 2.1.275 or later) | Describe the artifact, or run `/sketchy:sketchy`. |
+| Any agent (npm) | `npx sketchy-skill install` copies the skill into every agent folder it finds; `--agent claude-code` or `--agent all` to choose, `--project` for the current folder | Describe the artifact. |
+| OpenClaw (ClawHub) | `npx clawhub install sketchy` | Describe the artifact. |
 | Claude Code (plugin) | `claude plugin marketplace add OthmanAdi/sketchy && claude plugin install sketchy@sketchy` | Describe the artifact, or run `/sketchy:sketchy`. Also adds `/sketchy:setup` and `/sketchy:doctor`. |
 | Claude Code (skill only) | `npx skills add OthmanAdi/sketchy -a claude-code -g` | Describe the artifact, or run `/sketchy`. |
 | Codex (plugin) | `codex plugin marketplace add OthmanAdi/sketchy && codex plugin add sketchy@sketchy` | Describe the artifact, or write `$sketchy`. |

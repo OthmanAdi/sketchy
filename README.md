@@ -19,6 +19,8 @@ sketchy is an agent skill for Claude Code, Codex, Cursor and Gemini CLI that mak
 npx skills add OthmanAdi/sketchy
 ```
 
+Other ways in: `/plugin install sketchy --marketplace OthmanAdi/sketchy` inside Claude Code, `npx sketchy-skill install` from npm (it copies the skill into every agent it finds on your machine), or `npx clawhub install sketchy` for OpenClaw.
+
 Then ask in plain words: *"make a 10-slide board update from this spreadsheet"*, *"explain how DNS works for a class of 15-year-olds"*, *"turn these numbers into a one-pager for the CFO"*. Viewing needs a browser. Installing needs Node 18+. Checks and PDF, PPTX and PNG exports need Playwright; video needs FFmpeg. Other agents and the Claude Code plugin: [INSTALL.md](INSTALL.md).
 
 <p align="center">

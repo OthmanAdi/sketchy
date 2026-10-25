@@ -1,10 +1,26 @@
 {
   "name": "sketchy-skill",
   "version": "0.1.0",
-  "private": true,
-  "description": "Hand-drawn pencil-sketchbook slides, charts, explainers, videos and generative sound for AI agents.",
+  "description": "Agent skill for hand-drawn slides, charts and explainer videos in Claude Code, Codex, Cursor and Gemini CLI: pencil-sketchbook decks, lessons and one-pagers as self-contained HTML with PDF, PPTX and MP4 export.",
   "license": "MIT",
+  "author": "Ahmad Othman Ammar Adi (https://github.com/OthmanAdi)",
+  "homepage": "https://othmanadi.github.io/sketchy/",
+  "repository": { "type": "git", "url": "git+https://github.com/OthmanAdi/sketchy.git" },
+  "bugs": { "url": "https://github.com/OthmanAdi/sketchy/issues" },
+  "keywords": [
+    "agent-skills", "claude-code", "claude-skills", "codex", "cursor", "gemini-cli",
+    "hand-drawn", "slides", "presentation", "charts", "data-visualization", "sketchnote",
+    "whiteboard", "excalidraw", "pptx", "explainer-video", "skill"
+  ],
   "type": "module",
+  "bin": { "sketchy-skill": "bin/sketchy-skill.mjs" },
+  "files": [
+    "bin/",
+    "skills/sketchy/",
+    "!skills/sketchy/evals/",
+    "!skills/sketchy/dev/fixtures/",
+    "INSTALL.md"
+  ],
   "engines": { "node": ">=18" },
   "devDependencies": {
     "playwright": "1.63.0"
