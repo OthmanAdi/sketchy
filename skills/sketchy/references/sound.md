@@ -1,6 +1,6 @@
 # Sound
 
-`engine/sketchy-sound.js` makes every sound from code: no audio files, no network. It gives you 14 sound effects and a generative music bed. It works from `file://` and has no dependencies.
+`engine/sketchy-sound.js` makes every sound from code: no audio files, no network. It gives you 14 sound effects, 14 UI cues for buttons and flows, and a generative music bed. It works from `file://` and has no dependencies.
 
 ## When to turn sound on
 
@@ -51,6 +51,47 @@ The button text becomes `sound` when on and `muted` when off. Set `data-label-on
 | `paper` | A sheet sliding on a table. |
 
 Each call varies a little in gain, pitch and timing, and each name has a minimum gap (for example 90 ms for `pencil`, 300 ms for `stamp`), so a loop that fires every frame still sounds like a person. Bells, chimes and arpeggios stay within a few cents of the key. Tails decay to silence.
+
+## UI cues
+
+`play()` also takes 14 short cues for buttons and flows, in a deck or in any other web page. They are dry (no reverb, no echo). Their pitch is a fixed number of semitones from a root that follows the key (the running music, else the page's `data-seed`), and they use only intervals that every mood shares (unison, second, fourth, fifth, octave), so they never clash with the music. Rising and moving right means on, next or open. Falling and moving left means off, back or close. They share one set of materials: graphite for contact, soft wood for weight, felt tines for meaning, paper air for motion.
+
+| Name | Length | What it is | Use it for |
+|---|---|---|---|
+| `click` | 30 ms | a graphite tick on a small wooden body | a primary button press |
+| `tap-soft` | 60 ms | a fingertip on felt, lower and rounder | secondary actions, list rows, touch |
+| `select` | 130 ms | a tick and one bright tine | choosing a tab, an option or an item |
+| `toggle-on` | 180 ms | a wooden detent, then two tines rising a fifth | a switch or a checkbox turning on |
+| `toggle-off` | 165 ms | a duller detent, then two notes falling a fifth | a switch or a checkbox turning off |
+| `step-next` | 145 ms | a pencil line drawn to the right that lands on a high tine | the next step of a wizard, a lesson or a build |
+| `step-back` | 145 ms | the line drawn to the left, landing a fifth lower | the previous step |
+| `page-next` | 210 to 240 ms | a page corner lifts, the sheet swishes right and lands | moving to the next page or view |
+| `page-back` | 140 to 170 ms | one quick pull to the left that darkens | returning to the previous page or view |
+| `reveal` | 245 ms | rising air that opens into a soft fifth | a panel, a card or a drawing appears |
+| `dismiss` | 145 ms | falling air that settles on a low knock | closing a panel, a dialog or a toast |
+| `sketch-done` | 325 ms | a pencil check mark, a tap, a fifth and an octave | a drawing or a draft is finished |
+| `celebrate` | 770 ms | a wooden bloom, five tines rising left to right, paper confetti | a rare milestone, about once per session |
+| `error-soft` | 225 ms | two muffled wooden knocks falling a fourth | something failed and needs another try |
+
+The levels form a ladder: `click` and `tap-soft` are the quietest, selection, steps and page changes sit 1 to 3 dB above them, `sketch-done` and `error-soft` about 4 dB higher again, and `celebrate` the loudest. The frequent cues sit at the level of the `tap` effect, the outcomes near `page`, `celebrate` near `pencil`, and none comes near `stamp`. Options are the same as for effects (`gain`, `pan`, `pitch`, `force`). Each cue has its own minimum gap (40 ms for `click` up to 1.2 s for `celebrate`), and two cues that start within 30 ms of each other play only the first, so one action that fires two cues is heard once.
+
+- `SketchySound.cue.names` lists the cues. `SketchySound.names` lists everything `play()` takes.
+- `SketchySound.cue.info(name)` returns `{ name, min, max, gap }`: the shortest and longest audible length in seconds (onset to -60 dBFS on the effect bus) and the minimum gap.
+- `SketchySound.cue.render(name, opts)` renders one cue offline and resolves with an `AudioBuffer`, for a WAV file (`toWav`) or to compare a port with the original. Options: `seed`, `key` (`'D'`, `'F#'` or a pitch class), `level` (default 0.15, the master gain; the live master compressor adds 3 to 6 dB on top; 1 is the effect bus itself), `sampleRate`, `duration`, and `vary: false` for the nominal recipe without the per-call variation. The render skips the master chain.
+
+In a deck, `reveal` suits a card that turns over, `sketch-done` the moment a drawing finishes, and `celebrate` the last slide of a launch. The deck still plays `page` on a slide change and `pencil` on a step by itself.
+
+## Using the cues in a host app
+
+The cues work in any page that loads `engine/sketchy-sound.js`, without a deck and without music.
+
+- Browsers start audio only after a click, a tap or a key press, so unlock on the first gesture: call `SketchySound.enable()` from the handler of the control that turns sound on. When the user's saved preference is on, the module waits for the first gesture of the visit and resumes there. Until the audio context runs, `play()` returns `false` and the cue is skipped, not queued.
+- Sound stays off until the user turns it on. Mirror your own mute setting: call `enable()` when the user turns sound on and `disable()` when they mute. The module also remembers the choice in `localStorage['sketchy:sound']`. Set `SketchySound.hotkey = false` when the `s` key should not toggle sound in your app. Show a visible mute control, and never let a cue be the only sign that something happened.
+- The per-cue gaps and the shared 30 ms gap are built in as a safety net. Call one cue per user action, and do not play cues on hover, on every keystroke, or on every scroll or drag frame.
+- Every cue is under 400 ms except `celebrate` (about 0.8 s), which is for rare moments. A cue should be over before the next likely action.
+- A page without `data-music` opens its audio context with the browser's interactive latency, so the sound follows the click closely. A page with music uses larger buffers.
+- Cues follow the running music. Without music they take their key from the first `data-seed` on the page (the seed `sketchy` when there is none), so the cues of one page stay in one key on every visit.
+- The live output is quiet on purpose, with cue peaks between about -28 and -18 dBFS, and the user's volume does the rest. `gain` raises one call: at `gain: 4` (12 dB) the loudest cue peaks near -6 dBFS, and the master limiter holds anything louder.
 
 ## Music
 
@@ -114,4 +155,5 @@ Determinism: the render does not use `Math.random()` or the clock. The same opti
 - Each layer has a fixed number of voices. A note that finds the pool full is skipped, the same way every time.
 - The live reverb is a `ConvolverNode`. The offline reverb has the same impulse response and level.
 - Safari and Firefox were not tested. Use a recent Chromium for the video render.
-- Checks run in headless Chromium: `dev/sound-test.html` has a button for every effect, every mood and section, and an offline render that offers the WAV.
+- Checks run in headless Chromium: `dev/sound-test.html` has a button for every effect, every cue, every mood and section, and an offline render that offers the WAV.
+- `node skills/sketchy/dev/check-cues.mjs` renders every cue offline with seeded variations and fails on NaN, a peak at or above 0.9 on the effect bus, a length outside the declared span, sound in the 50 ms after it, an end that is cut instead of decayed, two renders that differ, or two cues (or a cue and an effect) that are near-identical. It also plays every cue through the live path. `--wav <dir>` writes each cue as a WAV file. A machine check cannot say whether a cue is pleasant or tiring, so listen on a phone speaker, a laptop and headphones before changing one.

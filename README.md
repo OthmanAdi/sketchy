@@ -113,6 +113,7 @@ The full style in exact values is in [style-dna.md](skills/sketchy/references/st
 Sound stays off until the viewer presses `s` or the sound button. Everything you hear is synthesized in the browser with Web Audio, without samples, an API key or a network connection.
 
 - **Effects:** pencil scratch on a step, page turn, rubber stamp, paper slide, bells tuned to the music's key.
+- **UI cues:** 14 short, dry cues for buttons and flows (click, select, toggle, next and back, reveal, dismiss, a finished sketch, a soft error, a celebration) that any web page can play, in the same key as the music.
 - **Music:** generative, in moods (`sketchbook`, `ledger`, `focus`, `calm`). Chords come from a Markov chain, melodies from constrained walks on the scale, and the same deck seed always gives the same piece.
 - **Video:** `render-video.mjs` renders that same soundtrack offline, mixes in the effects at each page turn and stamp, and masters it to -16 LUFS.
 

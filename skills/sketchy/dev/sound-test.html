@@ -53,6 +53,27 @@
   </div>
 
   <div class="sk-sheet panel" data-sk="frame">
+    <h2>UI cues</h2>
+    <p class="sk-fine">Short, dry cues for buttons and flows, tuned to the music when it plays. Two cues within 30 ms of each other play only the first.</p>
+    <div class="row" id="cues">
+      <button class="sk-btn" data-sk="button" data-cue="click">click</button>
+      <button class="sk-btn" data-sk="button" data-cue="tap-soft">tap-soft</button>
+      <button class="sk-btn" data-sk="button" data-cue="select">select</button>
+      <button class="sk-btn" data-sk="button" data-cue="toggle-on">toggle-on</button>
+      <button class="sk-btn" data-sk="button" data-cue="toggle-off">toggle-off</button>
+      <button class="sk-btn" data-sk="button" data-cue="step-next">step-next</button>
+      <button class="sk-btn" data-sk="button" data-cue="step-back">step-back</button>
+      <button class="sk-btn" data-sk="button" data-cue="page-next">page-next</button>
+      <button class="sk-btn" data-sk="button" data-cue="page-back">page-back</button>
+      <button class="sk-btn" data-sk="button" data-cue="reveal">reveal</button>
+      <button class="sk-btn" data-sk="button" data-cue="dismiss">dismiss</button>
+      <button class="sk-btn" data-sk="button" data-cue="sketch-done">sketch-done</button>
+      <button class="sk-btn" data-sk="button" data-cue="celebrate">celebrate</button>
+      <button class="sk-btn" data-sk="button" data-cue="error-soft">error-soft</button>
+    </div>
+  </div>
+
+  <div class="sk-sheet panel" data-sk="frame">
     <h2>Music</h2>
     <div class="row">
       <label>seed <input type="text" id="seed" value="sketchy-demo"></label>
@@ -105,6 +126,11 @@
   document.querySelectorAll('[data-sfx]').forEach(function (b) {
     b.addEventListener('click', function () {
       whenOn().then(function () { S.play(b.getAttribute('data-sfx'), { length: 1.6 }); });
+    });
+  });
+  document.querySelectorAll('[data-cue]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      whenOn().then(function () { S.play(b.getAttribute('data-cue')); });
     });
   });
 

@@ -514,7 +514,7 @@
 
   /* Filtered noise with a path for the filter frequency and for the loudness.
      o: t, dur, type, freqs [[dt, Hz]...] (exponential), q0, q1, amp [[dt, level, 1 = exponential]...],
-        am {rate, depth}, hp, panFrom, panTo, pan, wet, echo */
+        am {rate, depth}, hp, lp, panFrom, panTo, pan, wet, echo */
   function sweep(E, o) {
     var slot = grab(E, o);
     if (!slot) return;
@@ -534,6 +534,7 @@
     src.connect(bp);
     var extra = [bp], last = bp;
     if (o.hp) { var hp = c.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = o.hp; last.connect(hp); last = hp; extra.push(hp); }
+    if (o.lp) { var lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = o.lp; lp.Q.value = 0.5; last.connect(lp); last = lp; extra.push(lp); }
     if (o.am) {
       var am = c.createGain(); am.gain.value = 1 - o.am.depth;
       var lfo = c.createOscillator(); lfo.type = 'sine'; lfo.frequency.setValueAtTime(o.am.rate, t);
@@ -721,15 +722,215 @@
       pan: v.pan != null ? v.pan : (r() - 0.5) * 0.4 });
   };
 
+  /* ------------------------------------------------------------------ *
+   * 3c. UI cues for a deck or a host app: clicks, toggles, steps, page
+   *     changes, reveals and outcomes.
+   *     They are dry (no reverb, no echo) and short. Every pitch is a fixed number
+   *     of semitones from a root that follows the key (the running music, else the
+   *     page seed), and only intervals that exist in all three modes are used (0, 2,
+   *     5, 7 and their octaves), so a cue never clashes with the music.
+   *     One family of materials: graphite (a short band of noise) for contact, soft
+   *     wood (a sine that settles from slightly sharp, plus one inharmonic partial)
+   *     for weight, felt tines (a sine whose FM brightness fades early) for meaning,
+   *     and paper air (swept noise) for motion. Rising and moving right means on,
+   *     next or open; falling and moving left means off, back or close.
+   *     The approach was informed by studying UI SFX (https://github.com/romainsimon/uisfx,
+   *     MIT code, CC0 audio): semantic names, short dry envelopes, frequent cues
+   *     quieter than outcomes, per-cue rate limits. No code or audio was copied.
+   * ------------------------------------------------------------------ */
+  var CUE_NAMES = ['click', 'tap-soft', 'select', 'toggle-on', 'toggle-off', 'step-next', 'step-back',
+    'page-next', 'page-back', 'reveal', 'dismiss', 'sketch-done', 'celebrate', 'error-soft'];
+  /* [shortest, longest] audible length in seconds at the default gain: from the onset
+     to the last sample above -60 dBFS on the effect bus. dev/check-cues.mjs holds every
+     cue to it and checks that the 50 ms after the longest length are silent. */
+  var CUE_SPAN = {
+    click: [0.025, 0.045], 'tap-soft': [0.045, 0.075], select: [0.1, 0.15], 'toggle-on': [0.15, 0.21],
+    'toggle-off': [0.14, 0.19], 'step-next': [0.12, 0.17], 'step-back': [0.12, 0.17], 'page-next': [0.18, 0.27],
+    'page-back': [0.12, 0.2], reveal: [0.21, 0.29], dismiss: [0.12, 0.17], 'sketch-done': [0.28, 0.37],
+    celebrate: [0.65, 0.9], 'error-soft': [0.19, 0.26]
+  };
+  var CUE_GAP = 0.03;   // two UI cues never start closer together than this; the first one wins
+
+  // the root of every cue: the key's tonic moved into A4..G#5 (440 to 831 Hz)
+  function cueRoot(R) { return foldInto(R.key.tonic + 24, 69, 80); }
+  function cueHz(R, semis, v) { return midiHz(cueRoot(R) + semis) * v.p; }
+
+  /* Soft wood. A sine that starts `from` times sharp and settles on f (or on f * to)
+     within `glide` seconds, an inharmonic partial at 2.71 f that dies three times as
+     fast, and a 6 ms puff of band-passed noise for the contact. `bright` (0..1) scales
+     the partial and the contact; 0 leaves a plain, rounder body.
+     o: t, f, dur, peak, from, to, glide, atk, type, lp, bright, pan */
+  function wood(E, o) {
+    var b = o.bright == null ? 1 : o.bright;
+    tone(E, { t: o.t, f0: o.f * (o.from || 1.06), f1: o.f * (o.to || 1), glide: o.glide || 0.008, dur: o.dur,
+      atk: o.atk || 0.0012, peak: o.peak, type: o.type, lp: o.lp, pan: o.pan });
+    if (b <= 0) return;
+    tone(E, { t: o.t, f0: o.f * 2.71, dur: Math.max(0.012, o.dur / 3), atk: 0.0008, peak: o.peak * 0.24 * b, pan: o.pan });
+    hit(E, { t: o.t, type: 'bandpass', freq: Math.min(o.f * 4, 4200), q: 0.9, dur: 0.006, atk: 0.0006, peak: o.peak * 0.4 * b, pan: o.pan });
+  }
+
+  /* A felt tine: a sine with FM at the same frequency whose depth fades over the first
+     40 % of the decay, so it starts soft-bright and ends pure. depth 0 is a pure sine.
+     o: t, f, dur, peak, atk, depth, pan */
+  function tine(E, o) {
+    var d = o.depth == null ? 0.4 : o.depth;
+    bellVoice(E, { t: o.t, f: o.f, peak: o.peak, decay: o.dur, atk: o.atk || 0.003, ratio: d > 0 ? 1 : 0, depth: d, pan: o.pan });
+  }
+
+  /* A short pencil line: a narrow band of noise that slides from f0 to f1, with a fast
+     tremolo for the grain of the paper. o: t, dur, f0, f1, peak, rate, pan | panFrom, panTo */
+  function stroke(E, o) {
+    sweep(E, { t: o.t, dur: o.dur, freqs: [[0, o.f0], [o.dur, o.f1]], q0: 1.8,
+      amp: [[0.01, o.peak], [o.dur * 0.65, o.peak * 0.75], [o.dur, 0.0001, 1]],
+      am: { rate: o.rate || 30, depth: 0.35 }, hp: 1200, lp: 5200, pan: o.pan, panFrom: o.panFrom, panTo: o.panTo });
+  }
+
+  // a fixed pan for every voice when the caller passes one, else the cue's own
+  function side(v, own) { return v.pan != null ? v.pan : own; }
+
+  // contact: a graphite tick on a small wooden body
+  SFX.click = function (E, t, v) {
+    hit(E, { t: t, type: 'bandpass', freq: 3400 * v.p, q: 1.4, dur: 0.008, atk: 0.0006, peak: 0.09 * v.g, pan: v.pan });
+    wood(E, { t: t, f: cueHz(E.R, 5, v), dur: 0.04, peak: 0.17 * v.g, bright: 0.8, pan: v.pan });
+  };
+
+  // contact, softer: a fingertip on felt and paper, lower and rounder, no tick
+  SFX['tap-soft'] = function (E, t, v) {
+    hit(E, { t: t, type: 'lowpass', freq: 1500 * v.p, q: 0.7, dur: 0.024, atk: 0.003, peak: 0.06 * v.g, pan: v.pan });
+    wood(E, { t: t, f: cueHz(E.R, -5, v), from: 1.03, dur: 0.075, atk: 0.003, type: 'triangle', lp: 1500, peak: 0.2 * v.g, bright: 0, pan: v.pan });
+  };
+
+  // one item becomes the chosen one: a tick and a single bright tine an octave up
+  SFX.select = function (E, t, v) {
+    hit(E, { t: t, type: 'bandpass', freq: 4200 * v.p, q: 1.6, dur: 0.007, atk: 0.0005, peak: 0.06 * v.g, pan: v.pan });
+    tine(E, { t: t + 0.003, f: cueHz(E.R, 12, v), dur: 0.16, atk: 0.002, depth: 0.5, peak: 0.12 * v.g, pan: v.pan });
+    tone(E, { t: t + 0.003, f0: cueHz(E.R, 19, v), dur: 0.06, atk: 0.002, peak: 0.022 * v.g, pan: v.pan });
+  };
+
+  // a switch: the wooden detent, then two tines that rise a fifth (on) or fall one (off)
+  SFX['toggle-on'] = function (E, t, v) {
+    wood(E, { t: t, f: cueHz(E.R, -12, v), from: 1.08, dur: 0.05, peak: 0.12 * v.g, pan: v.pan });
+    tine(E, { t: t + 0.004, f: cueHz(E.R, 0, v), dur: 0.07, depth: 0.35, peak: 0.07 * v.g, pan: v.pan });
+    tine(E, { t: t + 0.05, f: cueHz(E.R, 7, v), dur: 0.17, depth: 0.45, peak: 0.11 * v.g, pan: v.pan });
+  };
+  SFX['toggle-off'] = function (E, t, v) {
+    var f = cueHz(E.R, 0, v);
+    wood(E, { t: t, f: cueHz(E.R, -12, v), from: 1.05, to: 0.97, glide: 0.03, dur: 0.05, peak: 0.12 * v.g, bright: 0.6, pan: v.pan });
+    tine(E, { t: t + 0.004, f: cueHz(E.R, 7, v), dur: 0.06, depth: 0.35, peak: 0.07 * v.g, pan: v.pan });
+    tone(E, { t: t + 0.05, f0: f, f1: f * 0.985, dur: 0.15, atk: 0.003, type: 'triangle', lp: 1800, peak: 0.12 * v.g, pan: v.pan });
+  };
+
+  // one step on in a flow: a pencil line drawn to the right that lands on a high tine;
+  // one step back: the line drawn to the left, landing a fifth lower
+  function stepCue(E, t, v, dir) {
+    var r = E.rnd, up = dir > 0;
+    stroke(E, { t: t, dur: 0.065, f0: (up ? 2300 : 3600) * v.p, f1: (up ? 3600 : 2300) * v.p, peak: 0.09 * v.g, rate: 26 + r() * 8,
+      panFrom: side(v, -0.25 * dir), panTo: side(v, 0.2 * dir) });
+    tine(E, { t: t + 0.055, f: cueHz(E.R, up ? 12 : 5, v), dur: 0.12, depth: 0.4, peak: 0.08 * v.g, pan: side(v, 0.25 * dir) });
+  }
+  SFX['step-next'] = function (E, t, v) { stepCue(E, t, v, 1); };
+  SFX['step-back'] = function (E, t, v) { stepCue(E, t, v, -1); };
+
+  /* A light page change, told apart by shape as well as by direction, so it still
+     reads on a mono phone speaker. Forward: the corner lifts with a small flick, the
+     sheet gathers speed and brightness, then lands. Back: one quick pull that starts
+     bright, darkens, and tucks in. */
+  function pageCue(E, t, v, dir) {
+    var r = E.rnd, p = v.p, g = v.g, a = side(v, -0.35 * dir), b = side(v, 0.35 * dir), L;
+    if (dir > 0) {
+      L = 0.24 + r() * 0.03;
+      hit(E, { t: t, type: 'bandpass', freq: 4500 * p, q: 1, dur: 0.01, atk: 0.001, peak: 0.04 * g, pan: a });
+      sweep(E, { t: t + 0.006, dur: L, freqs: [[0, 900 * p], [L * 0.62, 3200 * p], [L, 2000 * p]], q0: 0.9,
+        amp: [[L * 0.6, 0.11 * g], [L, 0.0001, 1]], am: { rate: 12 + r() * 4, depth: 0.25 }, hp: 400, lp: 3800, panFrom: a, panTo: b });
+      hit(E, { t: t + L * 0.64, type: 'lowpass', freq: 650, q: 0.7, dur: 0.05, atk: 0.005, peak: 0.05 * g, pan: b });
+    } else {
+      L = 0.2 + r() * 0.03;
+      sweep(E, { t: t, dur: L, freqs: [[0, 3000 * p], [L * 0.3, 2400 * p], [L, 800 * p]], q0: 0.9,
+        amp: [[0.015, 0.11 * g], [L * 0.3, 0.09 * g], [L, 0.0001, 1]], am: { rate: 15 + r() * 4, depth: 0.25 }, hp: 400, lp: 3800, panFrom: a, panTo: b });
+      hit(E, { t: t + L * 0.55, type: 'lowpass', freq: 500, q: 0.7, dur: 0.045, atk: 0.004, peak: 0.045 * g, pan: b });
+    }
+  }
+  SFX['page-next'] = function (E, t, v) { pageCue(E, t, v, 1); };
+  SFX['page-back'] = function (E, t, v) { pageCue(E, t, v, -1); };
+
+  // something appears: rising air that opens into a soft open fifth
+  SFX.reveal = function (E, t, v) {
+    var g = v.g;
+    sweep(E, { t: t, dur: 0.16, freqs: [[0, 500 * v.p], [0.16, 2600 * v.p]], q0: 1.1, amp: [[0.1, 0.06 * g], [0.16, 0.0001, 1]], hp: 300, lp: 3600, pan: v.pan });
+    tine(E, { t: t + 0.09, f: cueHz(E.R, 0, v), dur: 0.2, atk: 0.012, depth: 0, peak: 0.07 * g, pan: side(v, -0.15) });
+    tine(E, { t: t + 0.09, f: cueHz(E.R, 7, v), dur: 0.2, atk: 0.012, depth: 0, peak: 0.055 * g, pan: side(v, 0.15) });
+  };
+
+  // something leaves: falling air that settles on a small low knock
+  SFX.dismiss = function (E, t, v) {
+    sweep(E, { t: t, dur: 0.13, freqs: [[0, 2400 * v.p], [0.13, 600 * v.p]], q0: 1.1, amp: [[0.015, 0.07 * v.g], [0.13, 0.0001, 1]], hp: 300, lp: 3600, pan: v.pan });
+    wood(E, { t: t + 0.09, f: cueHz(E.R, -5, v), from: 1.05, to: 0.98, glide: 0.04, dur: 0.07, peak: 0.1 * v.g, bright: 0.5, pan: v.pan });
+  };
+
+  // a drawing is finished: a check mark (short down stroke, longer up stroke), then the
+  // pencil taps the paper and lifts off on a fifth and an octave
+  SFX['sketch-done'] = function (E, t, v) {
+    var p = v.p, g = v.g;
+    stroke(E, { t: t, dur: 0.045, f0: 3000 * p, f1: 2400 * p, peak: 0.07 * g, pan: side(v, -0.1) });
+    stroke(E, { t: t + 0.05, dur: 0.085, f0: 2400 * p, f1: 3800 * p, peak: 0.09 * g, panFrom: side(v, -0.1), panTo: side(v, 0.2) });
+    wood(E, { t: t + 0.15, f: cueHz(E.R, 5, v), dur: 0.035, peak: 0.07 * g, bright: 0.7, pan: side(v, 0.2) });
+    tine(E, { t: t + 0.15, f: cueHz(E.R, 7, v), dur: 0.2, depth: 0.4, peak: 0.08 * g, pan: side(v, 0.1) });
+    tine(E, { t: t + 0.152, f: cueHz(E.R, 12, v), dur: 0.22, depth: 0, peak: 0.06 * g, pan: side(v, 0.25) });
+  };
+
+  /* the one long cue: a low wooden bloom, five tines rising through open intervals
+     from left to right, and small flicks of paper scattered over the first half second.
+     Rows: [start, semitones, decay] */
+  var CELEBRATE = [[0, 0, 0.3], [0.07, 7, 0.32], [0.14, 12, 0.36], [0.21, 14, 0.4], [0.3, 19, 0.62]];
+  SFX.celebrate = function (E, t, v) {
+    var r = E.rnd, g = v.g, i;
+    wood(E, { t: t, f: cueHz(E.R, -12, v), dur: 0.09, peak: 0.08 * g, bright: 0.4, pan: v.pan });
+    for (i = 0; i < CELEBRATE.length; i++) {
+      var n = CELEBRATE[i], last = i === CELEBRATE.length - 1;
+      tine(E, { t: t + n[0] + r() * 0.006, f: cueHz(E.R, n[1], v), dur: n[2], depth: last ? 0 : 0.4,
+        peak: (last ? 0.09 : 0.075) * g, pan: side(v, -0.3 + i * 0.15) });
+    }
+    for (i = 0; i < 7; i++) {
+      hit(E, { t: t + 0.05 + r() * 0.5, type: 'bandpass', freq: 2500 + r() * 2500, q: 1.2, dur: 0.008 + r() * 0.012, atk: 0.001,
+        peak: (0.012 + r() * 0.016) * g, pan: side(v, (r() - 0.5) * 1.2) });
+    }
+  };
+
+  // a soft error: two muffled wooden knocks that fall a fourth, the second one sagging
+  SFX['error-soft'] = function (E, t, v) {
+    var g = v.g;
+    wood(E, { t: t, f: cueHz(E.R, 0, v), from: 1.04, dur: 0.09, atk: 0.002, type: 'triangle', lp: 1500, peak: 0.15 * g, bright: 0, pan: v.pan });
+    hit(E, { t: t, type: 'lowpass', freq: 1200, q: 0.7, dur: 0.016, atk: 0.0015, peak: 0.04 * g, pan: v.pan });
+    wood(E, { t: t + 0.115, f: cueHz(E.R, -5, v), from: 1.03, to: 0.97, glide: 0.1, dur: 0.14, atk: 0.002, type: 'triangle', lp: 1200, peak: 0.16 * g, bright: 0, pan: v.pan });
+    hit(E, { t: t + 0.115, type: 'lowpass', freq: 1000, q: 0.7, dur: 0.016, atk: 0.0015, peak: 0.04 * g, pan: v.pan });
+  };
+
+  NAMES = NAMES.concat(CUE_NAMES);
+  for (var ci = 0; ci < CUE_NAMES.length; ci++) {
+    var cn = CUE_NAMES[ci];
+    if (cn !== 'page-next' && cn !== 'page-back') TONAL[cn] = 1;   // the page cues are noise only
+  }
+  var CUE_LIMITS = { click: 0.04, 'tap-soft': 0.05, select: 0.06, 'toggle-on': 0.08, 'toggle-off': 0.08, 'step-next': 0.09,
+    'step-back': 0.09, 'page-next': 0.22, 'page-back': 0.22, reveal: 0.12, dismiss: 0.12, 'sketch-done': 0.35, celebrate: 1.2, 'error-soft': 0.35 };
+  /* Trims measured with offline renders, as the loudest 50 ms through the live master
+     chain: click and tap-soft near -41 dBFS, selection, steps and page changes -40 to
+     -38, sketch-done and error-soft -36, celebrate -32. The deck effects for comparison:
+     tick -44, tap -39, page -33, pencil -31, stamp -25. */
+  var CUE_CAL = { click: 1.24, 'tap-soft': 0.92, select: 1.01, 'toggle-on': 1.06, 'toggle-off': 1.15, 'step-next': 1.2, 'step-back': 1.15,
+    'page-next': 1.88, 'page-back': 1.8, reveal: 0.87, dismiss: 1.82, 'sketch-done': 1.06, celebrate: 1.27, 'error-soft': 1.36 };
+  for (cn in CUE_LIMITS) { LIMITS[cn] = CUE_LIMITS[cn]; CAL[cn] = CUE_CAL[cn]; }
+
   /* Trigger one effect at absolute time t on a rig. Used by live play() and by cues
      in offline renders, so both paths share the rate limit and the variation. */
   function trigger(R, name, t, o) {
     var fn = SFX[name];
     if (!fn) return false;
     o = o || {};
-    var lim = LIMITS[name] || 0.05;
+    var lim = LIMITS[name] || 0.05, isCue = !!CUE_SPAN[name];
     if (!o.force && R.last[name] != null && t - R.last[name] < lim) return false;
+    if (isCue && !o.force && R.lastCue != null && t - R.lastCue < CUE_GAP) return false;
     R.last[name] = t;
+    if (isCue) R.lastCue = t;
     var r = R.rand;
     var v = {
       o: o,
@@ -1416,6 +1617,45 @@
     });
   }
 
+  /* renderCue(name, { seed, key, mood, sampleRate, duration, level, vary, gain, pan, pitch })
+     renders one effect or cue on its own: no music and no master chain, the effect bus
+     scaled by `level` (default MASTER, the master gain; the live compressor then adds
+     3 to 6 dB of makeup gain; 1 is the bus itself). The key comes from `key`, else from
+     the seed and mood. The length
+     defaults to a cue's longest span plus 50 ms, or 3 s for other effects. vary: false
+     plays the nominal recipe, with every random draw at the middle of its range. */
+  function renderCue(name, o) {
+    o = o || {};
+    var OAC = global.OfflineAudioContext || global.webkitOfflineAudioContext;
+    if (!OAC) return Promise.reject(new Error('OfflineAudioContext is not available in this browser'));
+    if (!SFX[name]) return Promise.reject(new Error('unknown sound "' + name + '"'));
+    var sr = o.sampleRate || 48000, span = CUE_SPAN[name];
+    var len = Math.ceil(Math.max(0.05, +o.duration || (span ? span[1] + 0.05 : 3)) * sr);
+    var seed = o.seed != null ? String(o.seed) : 'sketchy';
+    var ctx = new OAC(4, len, sr);
+    var R = buildMaster(ctx, { offline: true, seed: seed, split: true });
+    if (o.vary === false) R.rand = R.sfxEnv.rnd = function () { return 0.5; };
+    var H = header(seed, o.mood || 'sketchbook', o);
+    R.key = { tonic: H.tonic, scale: H.scale };
+    trigger(R, name, 0, o);
+    var sp1 = ctx.createChannelSplitter(2), sp2 = ctx.createChannelSplitter(2), mg = ctx.createChannelMerger(4);
+    R.premix.connect(sp1); R.revSend.connect(sp2);
+    sp1.connect(mg, 0, 0); sp1.connect(mg, 1, 1); sp2.connect(mg, 0, 2); sp2.connect(mg, 1, 3);
+    mg.connect(ctx.destination);
+    var level = o.level == null ? MASTER : +o.level;
+    return runOffline(ctx).then(function (stems) {
+      var d0 = stems.getChannelData(0), d1 = stems.getChannelData(1), w0 = stems.getChannelData(2), w1 = stems.getChannelData(3), j;
+      var wet = null;
+      for (j = 0; j < len; j++) { if (w0[j] !== 0 || w1[j] !== 0) { wet = convolveReverb(w0, w1, sr); break; } }
+      var out = ctx.createBuffer(2, len, sr), a = out.getChannelData(0), b = out.getChannelData(1);
+      for (j = 0; j < len; j++) {
+        a[j] = (d0[j] + (wet ? wet[0][j] : 0)) * level;
+        b[j] = (d1[j] + (wet ? wet[1][j] : 0)) * level;
+      }
+      return out;
+    });
+  }
+
   // 16-bit stereo PCM WAV. A mono buffer is written to both channels.
   function toWav(buf) {
     var n = buf.length, sr = buf.sampleRate;
@@ -1457,7 +1697,9 @@
     if (state.ctx) return state.ctx;
     var Ctor = AudioCtor(), ctx;
     if (!Ctor) return null;
-    try { ctx = new Ctor({ latencyHint: 'playback' }); }
+    // a page with music gets larger buffers; a page with only effects and cues gets the
+    // shortest delay between a click and its sound
+    try { ctx = new Ctor({ latencyHint: state.want ? 'playback' : 'interactive' }); }
     catch (e) { try { ctx = new Ctor(); } catch (e2) { return null; } }
     state.ctx = ctx;
     // Live effects vary from the deck's seed, never from the clock: the same deck makes
@@ -1697,6 +1939,7 @@
       if ((e.key !== 's' && e.key !== 'S') || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented) return;
       if (tg && (tg.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(tg.tagName))) return;
       if (global.SketchyDeck) return;   // the deck owns its keyboard map and calls toggle() itself
+      if (SketchySound.hotkey === false) return;   // a host app with its own mute control
       toggle();
     });
     doc.addEventListener('visibilitychange', onVisibility);
@@ -1710,6 +1953,8 @@
     version: '0.1.0',
     enable: enable, disable: disable, toggle: toggle,
     get isOn() { return state.on; },
+    /* false stops the s key from toggling sound on a page without a deck */
+    hotkey: true,
     play: play,
     music: music,
     renderOffline: renderOffline,
@@ -1723,6 +1968,15 @@
       return { mood: H.mood, key: H.keyName, mode: H.mode, bpm: H.bpm, tonic: H.tonic };
     },
     names: NAMES.slice(),
+    /* UI cues: SketchySound.play('click') plays one live; cue.render() renders one offline */
+    cue: {
+      names: CUE_NAMES.slice(),
+      info: function (name) {
+        var s = CUE_SPAN[name];
+        return s ? { name: name, min: s[0], max: s[1], gap: LIMITS[name] } : null;
+      },
+      render: renderCue
+    },
     moods: Object.keys(MOODS),
     sections: Object.keys(SECTIONS),
     /* for tools that want the graph on their own context */

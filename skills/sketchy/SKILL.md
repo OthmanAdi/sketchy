@@ -133,7 +133,7 @@ Request: *"Explain to my class of 14-year-olds why we have seasons. 6 slides, th
 | `engine/sketches.js` | the sketch catalog, more than 100 small drawings of things |
 | `engine/sketchy-charts.js` | hand-drawn charts with honest data (`<figure class="sk-chart">`) |
 | `engine/sketchy-deck.js` | the slide runtime: stage, page turn, steps, counters, overview, notes, print and video modes |
-| `engine/sketchy-sound.js` | procedural sound effects and generative music |
+| `engine/sketchy-sound.js` | procedural sound effects, UI cues for buttons and flows, and generative music |
 | `themes/` | token files; `_starter.css` is the one to copy for a brand |
 | `templates/` | starting files per artifact, with slots |
 | `scripts/` | `new`, `deal`, `build`, `lint`, `shoot`, `export-pdf`, `export-pptx`, `render-video`, `doctor` |
@@ -151,7 +151,7 @@ Request: *"Explain to my class of 14-year-olds why we have seasons. 6 slides, th
 | `references/sketches.md` | choosing pictures |
 | `references/motion.md` | anything that moves, reveals or counts |
 | `references/voice.md` | writing any word on a page |
-| `references/sound.md` | sound effects, music, video soundtrack |
+| `references/sound.md` | sound effects, UI cues (also for a host app), music, video soundtrack |
 | `references/export.md` | PDF, PPTX, PNG and MP4, and their limits |
 | `references/themes-and-templates.md` | brand colors, the user's own themes and templates |
 | `references/review.md` | the fresh-eyes review and its rubric |
