@@ -965,13 +965,13 @@
   var TAP_GAP = 0.055;        // two taps never start closer than this
   var ACCENT_GAP = 0.07;      // two pen accents never start closer than this; the first wins
   var PEN_NOISE_SEED = 13, AIR_NOISE_SEED = 99;
-  /* Level trims at the texture input, before SFX_LEVEL. Starting values: the check script's
-     --calibrate mode bisects them against TEX_TARGETS (the loudest of several seeds, since the
-     noise segment a seed picks moves the level by a fraction of a dB) and prints the values to
-     freeze here. */
-  var PEN_CAL = 0.1, TYPE_CAL = 0.15, AIR_CAL = 0.02;
+  /* Level trims at the texture input, before SFX_LEVEL, frozen from the check script's
+     --calibrate mode, which bisects them against TEX_TARGETS (the loudest of several seeds,
+     since the noise segment a seed picks moves the level by a fraction of a dB). Run it again
+     after any change to a texture recipe and paste the printed values here. */
+  var PEN_CAL = 0.04648, TYPE_CAL = 0.1024, AIR_CAL = 0.03373;
   // typing tap kinds in dB, relative to a letter
-  var TAP_TRIM = { letter: 0, space: 1, punctuation: -3, 'return': 1.5, settle: -2 };
+  var TAP_TRIM = { letter: 0, space: -6.9, punctuation: -0.5, 'return': -8.4, settle: -10.2 };
   /* What a listener hears: dBFS over the loudest 50 ms of the mean power of both channels,
      through the master chain. The quietest cues sit near -42, so no texture window may pass
      the margin, 6 dB under them. */
@@ -1282,7 +1282,8 @@
     else chosen = [words[0]].concat(pickEvenly(words.slice(1, -1), K - 2, function (x) { return x.l >= 3; })).concat([words[words.length - 1]]);
     chosen.sort(function (a, b) { return a.f - b.f; });
     var nW = chosen.length;
-    var nS = Math.max(0, Math.min(spaces.length, Math.floor(0.4 * K), K - nW));
+    // a text of spaces only has no word to take the budget, so its spaces get all of it
+    var nS = Math.max(0, Math.min(spaces.length, nW ? Math.floor(0.4 * K) : K, K - nW));
     var wordAt = {};
     for (i = 0; i < words.length; i++) wordAt[words[i].f] = words[i];
     var spaceTaps = nS ? pickEvenly(spaces, nS, function (idx) { var nw = wordAt[idx + 1]; return !!(nw && nw.l >= 4); }) : [];
