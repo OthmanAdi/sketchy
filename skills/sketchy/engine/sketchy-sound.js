@@ -1402,6 +1402,200 @@
   var texturePlan = { pen: planPen, typing: planTyping, air: planAir };
 
   /* ------------------------------------------------------------------ *
+   * 3e. The texture rig: a second input into the effect bus.
+   *     pen chain -------------------------------> lane PEN --\
+   *     taps -> texture sink -> typing filter ---> lane TYP --+-> sum -> DUCK -> sfx.dry
+   *     air chain -------------------------------> lane AIR --/
+   *     Built on first use only, so a render without textures keeps its graph, and a
+   *     silent texture adds exact zeros to the bus. No reverb or echo send: textures are
+   *     dry like the cues. With probe 'envelope' every source is a constant 1 and the
+   *     filters are left out, so the output is exactly the gain automation.
+   * ------------------------------------------------------------------ */
+  function buildTexture(R, o) {
+    if (R.tex) return R.tex;
+    o = o || {};
+    var ctx = R.ctx;
+    var T = {
+      R: R, ctx: ctx, probe: o.probe === 'envelope',
+      cal: { pen: o.cal && o.cal.pen != null ? +o.cal.pen : PEN_CAL, typing: o.cal && o.cal.typing != null ? +o.cal.typing : TYPE_CAL,
+        air: o.cal && o.cal.air != null ? +o.cal.air : AIR_CAL },
+      lanes: {}, chains: {}, sink: new Sink(ctx, TEX_POOL, false), noise: null, duckState: null, planGains: []
+    };
+    T.lanes.pen = ctx.createGain(); T.lanes.typing = ctx.createGain(); T.lanes.air = ctx.createGain();
+    T.lanes.pen.gain.value = 0; T.lanes.typing.gain.value = 0; T.lanes.air.gain.value = 0;
+    // typing taps: sink -> highpass 80 Hz -> lowpass 5.2 kHz -> lane
+    if (T.probe) {
+      T.typingProbe = ctx.createConstantSource(); T.typingProbe.offset.value = 1;
+      T.typingProbe.connect(T.lanes.typing); T.typingProbe.start(0);
+    } else {
+      var hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 80; hp.Q.value = 0.5;
+      var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 5200; lp.Q.value = 0.5;
+      T.sink.dry.connect(hp); hp.connect(lp); lp.connect(T.lanes.typing);
+      T.typingFilter = [hp, lp];
+    }
+    T.duck = ctx.createGain(); T.duck.gain.value = 1;
+    sumTree(ctx, [T.lanes.pen, T.lanes.typing, T.lanes.air]).connect(T.duck);
+    T.duck.connect(R.sfx.dry);
+    T.noiseBuffer = function () { return T.noise || (T.noise = makeNoise(ctx, 4, PEN_NOISE_SEED)); };
+    T.pinkBuffer = R.pinkBuffer;   // the music's pink noise, 6 s, seed AIR_NOISE_SEED
+    R.tex = T;
+    return T;
+  }
+
+  /* The pen voice, one chain per surface, kept while the surface is open:
+     noise -> highpass 900 -> bandpass fc(t), q(t) -> grain AM (0.6 + sawtooth x depth)
+     -> pressure L(t) * cal * trim -> lowpass lp(t) -> pan(t) -> lane. The source and the
+     LFO start when a plan arrives and stop after IDLE_STOP of silence. */
+  function penChain(T, surface) {
+    var ch = T.chains[surface] || (T.chains[surface] = { pen: null, air: null });
+    if (ch.pen) return ch.pen;
+    var ctx = T.ctx;
+    var P = { surface: surface, src: null, lfo: null, running: false, scheduledUntil: -1, plan: null, idleAt: -1, trim: 1, held: 0 };
+    P.hp = ctx.createBiquadFilter(); P.hp.type = 'highpass'; P.hp.frequency.value = 900; P.hp.Q.value = 0.5;
+    P.bp = ctx.createBiquadFilter(); P.bp.type = 'bandpass'; P.bp.frequency.value = 2600; P.bp.Q.value = 1.3;
+    P.am = ctx.createGain(); P.am.gain.value = 0.6;
+    P.ld = ctx.createGain(); P.ld.gain.value = 0.3;
+    P.ld.connect(P.am.gain);
+    P.pressure = ctx.createGain(); P.pressure.gain.value = 0;
+    P.lp = ctx.createBiquadFilter(); P.lp.type = 'lowpass'; P.lp.frequency.value = 4000; P.lp.Q.value = 0.5;
+    P.pan = !T.probe && ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (T.probe) P.pressure.connect(T.lanes.pen);
+    else {
+      P.hp.connect(P.bp); P.bp.connect(P.am); P.am.connect(P.pressure); P.pressure.connect(P.lp);
+      if (P.pan) { P.lp.connect(P.pan); P.pan.connect(T.lanes.pen); } else P.lp.connect(T.lanes.pen);
+    }
+    ch.pen = P;
+    return P;
+  }
+  function penStart(T, P, t, rnd) {
+    if (P.running) return;
+    var ctx = T.ctx;
+    if (T.probe) {
+      var k = ctx.createConstantSource(); k.offset.value = 1; k.connect(P.pressure); k.start(t); P.src = k;
+    } else {
+      var s = ctx.createBufferSource(); s.buffer = T.noiseBuffer(); s.loop = true;
+      s.connect(P.hp); s.start(t, rnd() * 3.6); P.src = s;
+      var lfo = ctx.createOscillator(); lfo.type = 'sawtooth'; lfo.frequency.value = 24;
+      lfo.connect(P.ld); lfo.start(t); P.lfo = lfo;
+    }
+    P.running = true; P.idleAt = -1;
+  }
+  function penStop(P, t) {
+    if (!P.running) return;
+    try { P.src.stop(t); } catch (e) { /* stopped */ }
+    if (P.lfo) { try { P.lfo.stop(t); } catch (e2) { /* stopped */ } }
+    P.src = null; P.lfo = null; P.running = false; P.scheduledUntil = -1;
+  }
+
+  /* The air voice, one chain per surface:
+     pink noise -> highpass 160 -> bandpass f(t) Q 0.6 -> lowpass 2600 -> breath AM
+     (0.88 + sine 0.23 Hz x 0.12) -> swell env(t) * cal -> pan 0.1 sin(2 pi 0.07 t) -> lane */
+  function airChain(T, surface) {
+    var ch = T.chains[surface] || (T.chains[surface] = { pen: null, air: null });
+    if (ch.air) return ch.air;
+    var ctx = T.ctx;
+    var A = { surface: surface, src: null, lfos: [], running: false, scheduledUntil: -1, plan: null, idleAt: -1, held: 0 };
+    A.hp = ctx.createBiquadFilter(); A.hp.type = 'highpass'; A.hp.frequency.value = 160; A.hp.Q.value = 0.5;
+    A.bp = ctx.createBiquadFilter(); A.bp.type = 'bandpass'; A.bp.frequency.value = 800; A.bp.Q.value = 0.6;
+    A.lp = ctx.createBiquadFilter(); A.lp.type = 'lowpass'; A.lp.frequency.value = 2600; A.lp.Q.value = 0.5;
+    A.am = ctx.createGain(); A.am.gain.value = 0.88;
+    A.breath = ctx.createGain(); A.breath.gain.value = 0.12; A.breath.connect(A.am.gain);
+    A.swell = ctx.createGain(); A.swell.gain.value = 0;
+    A.pan = !T.probe && ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+    if (T.probe) A.swell.connect(T.lanes.air);
+    else {
+      A.hp.connect(A.bp); A.bp.connect(A.lp); A.lp.connect(A.am); A.am.connect(A.swell);
+      if (A.pan) {
+        A.panDepth = ctx.createGain(); A.panDepth.gain.value = 0.1; A.panDepth.connect(A.pan.pan);
+        A.swell.connect(A.pan); A.pan.connect(T.lanes.air);
+      } else A.swell.connect(T.lanes.air);
+    }
+    ch.air = A;
+    return A;
+  }
+  function airStart(T, A, t, rnd) {
+    if (A.running) return;
+    var ctx = T.ctx;
+    if (T.probe) {
+      var k = ctx.createConstantSource(); k.offset.value = 1; k.connect(A.swell); k.start(t); A.src = k;
+    } else {
+      var s = ctx.createBufferSource(); s.buffer = T.pinkBuffer(); s.loop = true;
+      s.connect(A.hp); s.start(t, rnd() * 5); A.src = s;
+      var b = ctx.createOscillator(); b.type = 'sine'; b.frequency.value = 0.23; b.connect(A.breath); b.start(t);
+      A.lfos = [b];
+      if (A.panDepth) { var p = ctx.createOscillator(); p.type = 'sine'; p.frequency.value = 0.07; p.connect(A.panDepth); p.start(t); A.lfos.push(p); }
+    }
+    A.running = true; A.idleAt = -1;
+  }
+  function airStop(A, t) {
+    if (!A.running) return;
+    try { A.src.stop(t); } catch (e) { /* stopped */ }
+    for (var i = 0; i < A.lfos.length; i++) { try { A.lfos[i].stop(t); } catch (e2) { /* stopped */ } }
+    A.src = null; A.lfos = []; A.running = false; A.scheduledUntil = -1;
+  }
+
+  /* Key taps: one-shots through the texture sink. Every layer is an envelope like the
+     cues': transient [band Hz, Q, decay, peak], bottom [lowpass Hz, offset, decay, peak],
+     body [sine Hz, glide ratio, glide s, decay, peak] and for the space bar a rattle
+     [band Hz, Q, offset, decay, peak]. Peaks are relative to the letter transient. */
+  var TAP_RECIPES = {
+    letter:      { tr: [2600, 1.6, 0.009, 1], bot: [1100, 0.003, 0.014, 0.5], body: [185, 0.82, 0.018, 0.03, 0.35] },
+    space:       { tr: [1700, 1.0, 0.013, 1], bot: [800, 0.003, 0.022, 0.6], body: [118, 0.85, 0.03, 0.058, 0.45], rattle: [950, 2.2, 0.009, 0.026, 0.18] },
+    punctuation: { tr: [3000, 1.8, 0.007, 1], bot: [1300, 0.003, 0.010, 0.4], body: [210, 1, 0.018, 0.02, 0.3] },
+    'return':    { tr: [1500, 1.0, 0.015, 1], bot: [700, 0.003, 0.026, 0.65], body: [100, 0.8, 0.04, 0.075, 0.5] },
+    settle:      { tr: [1700, 1.0, 0.013, 1], bot: [800, 0.003, 0.022, 0.6], body: [118, 0.85, 0.03, 0.058, 0.45] }
+  };
+  var TAP_SPAN = 0.14;   // the longest tap (return) is silent after this
+  /* Renders one tap at t. Every layer gets its own gain into a sink slot, so a plan can
+     be faded without a shared node of many inputs; those gains are collected in `gains`. */
+  function tapVoice(T, tap, t, gains, k) {
+    var c = T.ctx, rec = TAP_RECIPES[tap.kind] || TAP_RECIPES.letter, n = 0;
+    var rnd = function () { n++; return (tap.offset + n * 0.37) % 1; };
+    var E = { R: T.R, sink: T.sink, rnd: rnd };
+    var out = {
+      take: function (tt, until) {
+        var slot = T.sink.take(tt, until);
+        if (!slot) return null;
+        var pg = c.createGain(); pg.gain.value = 1; pg.connect(slot);
+        gains.push({ g: pg, until: until });
+        return pg;
+      }
+    };
+    var ftr = rec.tr[0] * (1 + 0.08 * tap.f1), fbody = rec.body[0] * (1 + 0.12 * tap.f2), buf = T.noiseBuffer();
+    hit(E, { t: t, type: 'bandpass', freq: ftr, q: rec.tr[1], dur: rec.tr[2], atk: 0.0006, peak: k * rec.tr[3], buf: buf, pan: tap.pan, out: out });
+    hit(E, { t: t + rec.bot[1], type: 'lowpass', freq: rec.bot[0], q: 0.7, dur: rec.bot[2], atk: 0.001, peak: k * rec.bot[3], buf: buf, pan: tap.pan, out: out });
+    tone(E, { t: t, f0: fbody, f1: fbody * rec.body[1], glide: rec.body[2], dur: rec.body[3], atk: 0.0012, peak: k * rec.body[4], lp: 900, pan: tap.pan, out: out });
+    if (rec.rattle) hit(E, { t: t + rec.rattle[2], type: 'bandpass', freq: rec.rattle[0], q: rec.rattle[1], dur: rec.rattle[3], atk: 0.001, peak: k * rec.rattle[4], buf: buf, pan: tap.pan, out: out });
+  }
+
+  /* Ducking: one gain for all textures. A cue the limiter admitted pulls it down 9 dB
+     (15 dB for the outcomes) with a 15 ms ramp that starts 5 ms before the cue, holds it to
+     the cue's longest span and lets it back with a 65 ms (80 ms) time constant. Overlapping
+     cues take the deeper depth and the later end. duckAt follows the same automation. */
+  var DUCK_DEEP = { 'sketch-done': 1, 'error-soft': 1, celebrate: 1 };
+  function duckAt(T, t) {
+    var D = T.duckState;
+    if (!D || t < D.at) return 1;
+    if (t < D.attackEnd) return D.v0 + (D.depth - D.v0) * (t - D.at) / (D.attackEnd - D.at);
+    if (t < D.until) return D.depth;
+    return 1 + (D.depth - 1) * Math.exp(-(t - D.until) / D.tau);
+  }
+  function texDuck(R, name, t) {
+    var T = R.tex, span = CUE_SPAN[name];
+    if (!T || !span) return;
+    var deep = !!DUCK_DEEP[name], depth = fromDb(deep ? -15 : -9), tau = deep ? 0.08 : 0.065, until = t + span[1];
+    var t0 = t - 0.005, v0 = duckAt(T, t0), D = T.duckState;
+    if (D && t0 < D.until) { depth = Math.min(depth, D.depth); until = Math.max(until, D.until); tau = Math.max(tau, D.tau); }
+    var g = T.duck.gain;
+    g.cancelScheduledValues(t0);
+    g.setValueAtTime(v0, t0);
+    g.linearRampToValueAtTime(depth, t + 0.010);
+    g.setValueAtTime(depth, until);
+    g.setTargetAtTime(1, until, tau);
+    T.duckState = { at: t0, v0: v0, attackEnd: t + 0.010, depth: depth, until: until, tau: tau };
+  }
+
+  /* ------------------------------------------------------------------ *
    * 4. Musical voices
    *    All take (E, sink, t, f, vel, dur, pan, peak) and play through a slot of
    *    the layer's sink. A voice that finds the pool full is skipped.
@@ -2458,6 +2652,8 @@
        texture.plan.* are pure planners that node can run; see references/sound.md */
     texture: {
       plan: texturePlan,
+      /* the level trims the rig reads (dev/check-textures.mjs --calibrate adjusts them, then they are frozen in source) */
+      cal: { pen: PEN_CAL, typing: TYPE_CAL, air: AIR_CAL, kind: TAP_TRIM },
       shapes: PEN_SHAPES.slice(),
       info: { pool: TEX_POOL, lanes: ['pen', 'typing', 'air'], minGap: TAP_GAP, levels: { pen: TEX_TARGETS.pen, typing: TEX_TARGETS.letter, air: TEX_TARGETS.air },
         targets: TEX_TARGETS, surfaces: Object.keys(SURFACE_TRIM) }
