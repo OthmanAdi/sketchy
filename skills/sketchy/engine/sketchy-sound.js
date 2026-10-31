@@ -944,6 +944,464 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * 3d. Textures: a pen that follows the line, key taps under typed text
+   *     and a paper-air swell. Three lanes, one audible at a time, every
+   *     cue ducks them. This part holds the pure planners: they turn a host
+   *     timeline into control curves and tap lists and need no audio
+   *     context, so node runs them too (dev/check-textures.mjs does).
+   *     Nothing here reads the cue random stream or takes a cue slot.
+   * ------------------------------------------------------------------ */
+  var TEX_POOL = 12;          // slots of the texture sink (typing taps only)
+  var PRESSURE_RATE = 200;    // control points per second for the pen pressure
+  var PARAM_RATE = 100;       // control points per second for band, low-pass, pan and the grain
+  var TICK_MS = 25;           // live scheduler interval
+  var HORIZON = 0.12;         // how far ahead a tick schedules
+  var LEAD = 0.03;            // earliest time a new or changed plan touches a param
+  var STOP_LEAD = 0.01;       // a stop fade starts this soon after its event
+  var IDLE_STOP = 1.5;        // a chain at gain 0 with no plan stops its source after this
+  var MAX_STROKES = 64;       // strokes kept per surface; the oldest finished ones drop first
+  var MIN_RAMP = 0.012;       // no gain change on a running texture is faster than this
+  var TAP_GAP = 0.055;        // two taps never start closer than this
+  var ACCENT_GAP = 0.07;      // two pen accents never start closer than this; the first wins
+  var PEN_NOISE_SEED = 13, AIR_NOISE_SEED = 99;
+  /* Level trims at the texture input, before SFX_LEVEL. Starting values: the check script's
+     --calibrate mode bisects them against TEX_TARGETS and prints the values to freeze here. */
+  var PEN_CAL = 0.1, TYPE_CAL = 0.15, AIR_CAL = 0.02;
+  // typing tap kinds in dB, relative to a letter
+  var TAP_TRIM = { letter: 0, space: 1, punctuation: -3, 'return': 1.5, settle: -2 };
+  /* What a listener hears: dBFS over the loudest 50 ms of the mean power of both channels,
+     through the master chain. The quietest cues sit near -42, so no texture window may pass
+     the margin, 6 dB under them. */
+  var TEX_TARGETS = { pen: -51, penCeiling: -48.5, letter: -49.5, space: -48.5, punctuation: -52.5,
+    'return': -48, settle: -51.5, air: -57, wash: -65, margin: -48 };
+  var SURFACE_TRIM = { room: 0, sidebar: -2, wizard: -4, deck: 0 };
+  var LEVEL_TRIM = { full: 0, soft: -4 };
+  function fromDb(x) { return Math.pow(10, x / 20); }
+  // a cheap integer hash to 0..1 for values that must be the same at the same time on every replan
+  function unit(n) {
+    n = (n | 0) ^ 0x5bd1e995;
+    n = Math.imul(n ^ (n >>> 15), 0x2c1b3c6d);
+    n = Math.imul(n ^ (n >>> 12), 0x297a2d39);
+    return ((n ^ (n >>> 15)) >>> 0) / 4294967296;
+  }
+
+  /* The speed of the pen comes from the stroke's own easing. Every ink stroke on the host
+     draws with cubic-bezier(0.22, 1, 0.36, 1): for a time fraction x, solve bx(u) = x by
+     Newton, then the drawn fraction is by(u) and the speed is the slope by'/bx'. The speed
+     is divided by the steepest slope of the curve (4.545 for the default, at x = 0), so it
+     starts at 1 and falls to 0 exactly as the line on screen slows. */
+  var EASE_DEFAULT = [0.22, 1, 0.36, 1];
+  var easeCache = {};
+  function easing(e) {
+    e = (e && e.length === 4) ? e : EASE_DEFAULT;
+    var key = e.join(',');
+    if (easeCache[key]) return easeCache[key];
+    var x1 = +e[0], y1 = +e[1], x2 = +e[2], y2 = +e[3];
+    function bx(u) { var v = 1 - u; return 3 * v * v * u * x1 + 3 * v * u * u * x2 + u * u * u; }
+    function by(u) { var v = 1 - u; return 3 * v * v * u * y1 + 3 * v * u * u * y2 + u * u * u; }
+    function dbx(u) { var v = 1 - u; return 3 * v * v * x1 + 6 * v * u * (x2 - x1) + 3 * u * u * (1 - x2); }
+    function dby(u) { var v = 1 - u; return 3 * v * v * y1 + 6 * v * u * (y2 - y1) + 3 * u * u * (1 - y2); }
+    function solve(x) {
+      if (x <= 0) return 0;
+      if (x >= 1) return 1;
+      var u = x;
+      for (var i = 0; i < 6; i++) { var d = dbx(u); if (Math.abs(d) < 1e-7) break; u -= (bx(u) - x) / d; }
+      return clamp(u, 0, 1);
+    }
+    function slope(u) { var d = dbx(u); return d > 1e-7 ? dby(u) / d : 0; }
+    var top = 0;
+    for (var k = 0; k <= 64; k++) top = Math.max(top, slope(k / 64));
+    if (top <= 0) top = 1;
+    var fn = {
+      p: function (x) { return by(solve(x)); },
+      s: function (x) { return clamp(slope(solve(x)) / top, 0, 1); },
+      // the first time fraction at which the drawn fraction reaches q
+      at: function (q) { for (var i = 0; i <= 400; i++) { if (by(solve(i / 400)) >= q) return i / 400; } return 1; }
+    };
+    easeCache[key] = fn;
+    return fn;
+  }
+
+  /* Shape profiles: modulations of the one pen voice, never a second synth.
+     e: exponent on the speed, trim in dB, am: [rate factor, depth factor], start: the
+     accent at the first contact; corner, dip, dipLen: the corners of boxes and polygons;
+     sub: the accent of each hatch mark. dot and text are silent. */
+  var SHAPES = {
+    line:          { e: 0.35, trim: 0,   am: [1, 1],    start: 0.5 },
+    curve:         { e: 0.6,  trim: 0,   am: [1, 1],    start: 0.5 },
+    ellipse:       { e: 0.5,  trim: 1,   am: [1, 0.6],  start: 0.4, close: 0.6 },
+    check:         { e: 0.5,  trim: 0.5, am: [1, 1],    start: 0.5, leg2: 0.7 },
+    'arrow-shaft': { e: 0.5,  trim: 0,   am: [1, 1],    start: 0.5 },
+    'arrow-head':  { e: 0.5,  trim: -2,  am: [1.3, 1],  start: 0.6 },
+    flick:         { e: 0.5,  trim: -3,  am: [1.3, 1],  start: 0.4 },
+    box:           { e: 0.45, trim: -1,  am: [1, 1],    start: 0.5, corner: 0.45, dip: 0.92, dipLen: 0.025 },
+    'box-round':   { e: 0.45, trim: -2,  am: [1, 0.85], start: 0.4, corner: 0.25 },
+    poly:          { e: 0.45, trim: -1,  am: [1, 1],    start: 0.5, corner: 0.35, dip: 0.94, dipLen: 0.02 },
+    hatch:         { e: 0.5,  trim: -2,  am: [1.1, 1],  sub: 0.3 },
+    wash:          { trim: -14, am: [1, 0.5] },
+    dot: null,
+    text: null
+  };
+  var PEN_SHAPES = Object.keys(SHAPES);
+  var BOX_CORNERS = [0.18, 0.40, 0.62];
+
+  function prepStroke(s, idx, seedBase, surface, key, vary) {
+    var shape = SHAPES.hasOwnProperty(s.shape) ? s.shape : 'line', P = SHAPES[shape];
+    var start = +s.start || 0, D = Math.max(0.05, +s.duration || 0.66);
+    var st = {
+      shape: shape, P: P, start: start, D: D, end: start + D, silent: !P, order: idx,
+      x0: s.x0 == null ? 0.5 : +s.x0, x1: s.x1 == null ? 0.5 : +s.x1,
+      ease: easing(s.easing), trim: P ? fromDb(P.trim) : 0,
+      seed: hash(seedBase + '|pen|' + surface + '|' + key + '|' + idx + '|' + start.toFixed(3)),
+      accents: [], corners: [], subs: 0, phi: 0, mid: start + D / 2
+    };
+    if (!P) return st;
+    var r = mulberry(st.seed), k, n;
+    st.mid = start + st.ease.at(0.5) * D;
+    if (shape === 'ellipse') st.phi = s.phi != null ? +s.phi : (vary === false ? 0 : r() * 2 * Math.PI);
+    else st.phi = vary === false ? 0 : r() * 2 * Math.PI;
+    if (P.start) st.accents.push({ t: start, a: P.start });
+    if (shape === 'box' || shape === 'box-round') st.corners = BOX_CORNERS.slice();
+    if (shape === 'poly') {
+      n = Math.max(3, Math.round(+s.marks || 3));
+      for (k = 1; k < n; k++) st.corners.push(0.8 * k / n);
+    }
+    for (k = 0; k < st.corners.length; k++) st.accents.push({ t: start + st.corners[k] * D, a: P.corner });
+    if (shape === 'ellipse') st.accents.push({ t: start + st.ease.at(0.97) * D, a: P.close });
+    if (shape === 'check') st.accents.push({ t: start + 0.24 * D, a: P.leg2 });
+    if (shape === 'hatch') {
+      st.subs = clamp(Math.round(+s.marks || 5), 3, 8);
+      for (k = 0; k < st.subs; k++) st.accents.push({ t: start + 0.85 * k / st.subs * D, a: P.sub });
+    }
+    return st;
+  }
+
+  /* One stroke at time t: its contribution c (0..1), speed s, band factor m, pan, the
+     low-pass factor b and the grain factors r, d. */
+  function evalStroke(st, t, out) {
+    var tau = t - st.start, P = st.P;
+    out.c = 0; out.s = 0; out.m = 1; out.pan = 0; out.b = 1; out.r = 1; out.d = 1;
+    if (!P || tau < 0 || tau > st.D) return out;
+    var x = tau / st.D, win = Math.min(1, tau / 0.010), prof = 1, m = 1, s, p, k, shape = st.shape;
+    out.r = P.am[0]; out.d = P.am[1];
+    if (shape === 'wash') {
+      // a whisper: no speed, an ease-in-out bell over the fade of the fill
+      prof = 0.5 - 0.5 * Math.cos(2 * Math.PI * x);
+      out.s = 0.1;
+      out.c = Math.min(1, st.trim * win * prof);
+      out.pan = (st.x0 + (st.x1 - st.x0) * x - 0.5) * 0.4;
+      return out;
+    }
+    p = st.ease.p(x); s = st.ease.s(x);
+    if (shape === 'check') {
+      if (x < 0.16) m = 1.05 - 0.13 * (x / 0.16);
+      else if (x < 0.24) {
+        // the lift between the two legs: 12 ms ramps down to -14 dB and back up
+        var into = (x - 0.16) * st.D, left = (0.24 - x) * st.D;
+        prof = 0.2 + 0.8 * Math.max(0, 1 - Math.min(into, left) / 0.012);
+        m = 0.92;
+      } else {
+        var u = (x - 0.24) / 0.76;
+        s = st.ease.s(u); p = 0.4 + 0.6 * st.ease.p(u);
+        m = 0.9 + 0.45 * u;
+      }
+    } else if (shape === 'ellipse') {
+      m = 1 + 0.28 * Math.sin(Math.PI * p);
+      out.pan += 0.18 * Math.sin(2 * Math.PI * p + st.phi);
+      out.b = 1 + 0.12 * Math.cos(2 * Math.PI * p + st.phi);
+    } else if (shape === 'curve') m = 1 + 0.06 * Math.sin(2 * Math.PI * 3 * tau);
+    else if (shape === 'arrow-shaft') m = 1 - 0.08 * x;
+    else if (shape === 'arrow-head' || shape === 'flick') { prof = Math.exp(-Math.max(0, tau - 0.012) / 0.07); m = 1.15; }
+    else if (shape === 'box' || shape === 'poly') {
+      for (k = 0; k < st.corners.length; k++) {
+        var tc = st.corners[k] * st.D;
+        if (tau >= tc && tau < tc + P.dipLen) { m = P.dip; break; }
+      }
+    } else if (shape === 'hatch') {
+      var span = 0.85 / st.subs;
+      if (x >= 0.85) prof = 0;
+      else {
+        var sub = Math.floor(x / span), ts = (x - sub * span) * st.D, len = span * st.D;
+        s = st.ease.s((x - sub * span) / span);   // every mark is its own quick line
+        prof = ts < 0.006 ? ts / 0.006 : 1 - 0.7 * Math.min(1, (ts - 0.006) / Math.max(0.001, len - 0.006));
+        m = sub % 2 ? 1.1 : 0.9;
+      }
+    }
+    out.s = s; out.m = m;
+    out.c = Math.min(1, st.trim * win * Math.pow(s, P.e) * prof);
+    out.pan += (st.x0 + (st.x1 - st.x0) * p - 0.5) * 0.4;
+    return out;
+  }
+
+  function mergeSpans(spans, bridge) {
+    spans = spans.slice().sort(function (a, b) { return a[0] - b[0]; });
+    var out = [];
+    for (var i = 0; i < spans.length; i++) {
+      var last = out[out.length - 1];
+      if (last && spans[i][0] - last[1] < (bridge || 0)) last[1] = Math.max(last[1], spans[i][1]);
+      else out.push([spans[i][0], spans[i][1]]);
+    }
+    return out;
+  }
+
+  /* plan.pen(timeline, { seed, from, init }): the union of the strokes as one voice.
+     Returns control arrays from t0: L (pressure, PRESSURE_RATE) and fc, q, lp, amRate,
+     amDepth, pan, band (PARAM_RATE), the accepted accents, the activity windows and a
+     summary of every stroke. `from` is the first control point (default 50 ms before the
+     first stroke); `init` carries the values a replan continues from. */
+  function planPen(timeline, o) {
+    o = o || {};
+    timeline = timeline || {};
+    var seedBase = String(o.seed != null ? o.seed : 'sketchy');
+    var surface = timeline.surface || 'deck', key = timeline.key != null ? String(timeline.key) : '';
+    var list = timeline.strokes || [], st = [], i, k;
+    for (i = 0; i < list.length; i++) st.push(prepStroke(list[i], list[i].order != null ? list[i].order : i, seedBase, surface, key, timeline.vary));
+    var first = Infinity, last = -Infinity, spans = [];
+    for (i = 0; i < st.length; i++) {
+      if (st[i].silent) continue;
+      first = Math.min(first, st[i].start); last = Math.max(last, st[i].end);
+      spans.push([st[i].start - 0.05, st[i].end + 0.15]);
+    }
+    var summary = st.map(function (s) {
+      return { shape: s.shape, start: s.start, duration: s.D, mid: s.mid, silent: s.silent, accents: s.accents.length, corners: s.corners.length, subs: s.subs, order: s.order };
+    });
+    var t0 = o.from != null ? +o.from : (first === Infinity ? 0 : first - 0.05);
+    if (first === Infinity || last + 0.35 <= t0) {
+      return { rate: PRESSURE_RATE, paramRate: PARAM_RATE, t0: t0, n: 0, L: new Float32Array(0), fc: new Float32Array(0), q: new Float32Array(0),
+        lp: new Float32Array(0), amRate: new Float32Array(0), amDepth: new Float32Array(0), pan: new Float32Array(0), band: new Float32Array(0),
+        accents: [], activity: [], window: [t0, t0], strokes: summary, seed: seedBase, surface: surface };
+    }
+    var to = last + 0.35;
+    var N = Math.ceil((to - t0) * PRESSURE_RATE) + 1, M = Math.ceil(N / 2);
+    // accents: every stroke start and shape accent, 70 ms apart, the first one wins
+    var acc = [];
+    for (i = 0; i < st.length; i++) for (k = 0; k < st[i].accents.length; k++) acc.push(st[i].accents[k]);
+    acc.sort(function (a, b) { return a.t - b.t; });
+    var accents = [];
+    for (i = 0; i < acc.length; i++) {
+      if (accents.length && acc[i].t - accents[accents.length - 1].t < ACCENT_GAP) continue;
+      accents.push({ t: acc[i].t, a: acc[i].a });
+    }
+    var L = new Float32Array(N), fc = new Float32Array(M), q = new Float32Array(M), lp = new Float32Array(M);
+    var amRate = new Float32Array(M), amDepth = new Float32Array(M), pan = new Float32Array(M), band = new Float32Array(M);
+    var init = o.init || {};
+    var Ls = init.L || 0, panS = init.pan || 0;
+    var hold = { sigma: init.sigma != null ? init.sigma : 1, m: init.m != null ? init.m : 1, b: 1, r: 1, d: 1, pan: init.pan || 0 };
+    var atk = 1 - Math.exp(-1 / (PRESSURE_RATE * 0.003)), rel = 1 - Math.exp(-1 / (PRESSURE_RATE * 0.03));
+    var panA = 1 - Math.exp(-1 / (PARAM_RATE * 0.03));
+    var jseed = (hash(seedBase + '|pen|' + surface + '|' + key + '|grain') | 0);
+    var ev = { c: 0, s: 0, m: 1, pan: 0, b: 1, r: 1, d: 1 }, firstAcc = 0;
+    for (i = 0; i < N; i++) {
+      var t = t0 + i / PRESSURE_RATE, prod = 1, sumC = 0, sig = 0, mm = 0, pp = 0, bb = 0, rr = 0, dd = 0;
+      for (k = 0; k < st.length; k++) {
+        evalStroke(st[k], t, ev);
+        if (ev.c <= 0) continue;
+        prod *= 1 - ev.c; sumC += ev.c;
+        sig += ev.c * ev.s; mm += ev.c * ev.m; pp += ev.c * ev.pan; bb += ev.c * ev.b; rr += ev.c * ev.r; dd += ev.c * ev.d;
+      }
+      var B = 1 - prod, A = 0;
+      while (firstAcc < accents.length && t - accents[firstAcc].t > 0.5) firstAcc++;
+      for (k = firstAcc; k < accents.length && accents[k].t <= t; k++) {
+        var ta = t - accents[k].t, kern = ta < 0.006 ? ta / 0.006 : Math.exp(-(ta - 0.006) / 0.045);
+        A = Math.max(A, accents[k].a * kern);
+      }
+      var raw = Math.min(1, 0.84 * B + 0.16 * A);
+      Ls += (raw > Ls ? atk : rel) * (raw - Ls);
+      L[i] = Ls;
+      if (i % 2) continue;
+      var j = i >> 1;
+      if (sumC >= 0.001) {
+        hold.sigma = sig / sumC; hold.m = mm / sumC; hold.pan = pp / sumC; hold.b = bb / sumC; hold.r = rr / sumC; hold.d = dd / sumC;
+      }
+      // the grain jitters: a new value in 0.88..1.12 every 40 ms, linear in between, fixed by the time
+      var jt = t / 0.04, j0 = Math.floor(jt), jf = jt - j0;
+      var jit = (0.88 + 0.24 * unit(j0 ^ jseed)) * (1 - jf) + (0.88 + 0.24 * unit((j0 + 1) ^ jseed)) * jf;
+      fc[j] = clamp((1900 + 1500 * hold.sigma) * hold.m, 1200, 5200);
+      q[j] = clamp(1.5 - 0.4 * hold.sigma, 1.1, 1.5);
+      lp[j] = clamp((3000 + 2600 * hold.sigma + 900 * A) * hold.b, 2400, 6800);
+      amRate[j] = clamp((14 + 20 * hold.sigma) * jit * hold.r, 12, 46);
+      amDepth[j] = clamp((0.22 + 0.2 * hold.sigma) * hold.d, 0.1, 0.42);
+      panS += panA * (clamp(hold.pan, -0.25, 0.25) - panS);
+      pan[j] = panS;
+      band[j] = hold.m;
+    }
+    return { rate: PRESSURE_RATE, paramRate: PARAM_RATE, t0: t0, n: N, L: L, fc: fc, q: q, lp: lp, amRate: amRate, amDepth: amDepth,
+      pan: pan, band: band, accents: accents, activity: mergeSpans(spans, 0), window: [t0, to], strokes: summary, seed: seedBase, surface: surface };
+  }
+
+  /* plan.typing(spec, { seed }): the rhythm of a typed line. The visual shows character n
+     at startAfter + n * 1000 / cps ms. Keys fall on word starts first, then on some spaces,
+     then on letters, never closer than TAP_GAP, and an end tap lands 110 ms after the last
+     character. Times are seconds from the typewriter's t = 0. */
+  var PUNCT = /[.,;:!?]/;
+  function tapKind(ch) { return /\s/.test(ch) ? 'space' : (PUNCT.test(ch) ? 'punctuation' : 'letter'); }
+  var TAP_PRIORITY = { space: 3, initial: 2, letter: 1, punctuation: 0 };
+  function pickEvenly(items, count, prefer) {
+    // `count` of `items` spread evenly, each slot taking the nearest unused item, preferred ones first
+    var out = [], used = {};
+    for (var j = 0; j < count; j++) {
+      var target = (j + 0.5) * items.length / count, best = -1, score = Infinity;
+      for (var i = 0; i < items.length; i++) {
+        if (used[i]) continue;
+        var sc = Math.abs(i - target) - (prefer(items[i]) ? 0.6 : 0);
+        if (sc < score) { score = sc; best = i; }
+      }
+      if (best < 0) break;
+      used[best] = 1; out.push(items[best]);
+    }
+    return out;
+  }
+  function planTyping(spec, o) {
+    o = o || {};
+    spec = spec || {};
+    var seedBase = String(o.seed != null ? o.seed : 'sketchy');
+    var text = String(spec.text == null ? '' : spec.text), N = text.length;
+    var cps = +spec.charsPerSecond > 0 ? +spec.charsPerSecond : 38, startAfter = +spec.startAfter || 0;
+    var end = spec.end == null ? 'settle' : spec.end, vary = spec.vary !== false;
+    var dt = 1000 / cps, t1 = (startAfter + dt) / 1000, tN = (startAfter + N * dt) / 1000, S = tN - t1;
+    var tapBase = seedBase + '|type|' + text + '|' + startAfter + '|' + cps + '|';
+    var out = { taps: [], t1: t1, tN: tN, span: S, end: end === 'return' || end === 'settle' ? end : 'none', budget: 0, rate: 0 };
+    if (!N) return out;
+    var words = [], spaces = [], i, w = null;
+    for (i = 0; i < N; i++) {
+      if (/\s/.test(text.charAt(i))) { spaces.push(i); w = null; }
+      else if (w) w.l++;
+      else { w = { f: i, l: 1 }; words.push(w); }
+    }
+    var rate = clamp(9 + (cps - 28) * 5 / 42, 9, 14);
+    var K = clamp(Math.round(S * rate), Math.min(N, 3), N);
+    out.budget = K; out.rate = rate;
+    var chosen;
+    if (words.length <= K) chosen = words.slice();
+    else if (K <= 2) chosen = K === 2 ? [words[0], words[words.length - 1]] : [words[0]];
+    else chosen = [words[0]].concat(pickEvenly(words.slice(1, -1), K - 2, function (x) { return x.l >= 3; })).concat([words[words.length - 1]]);
+    chosen.sort(function (a, b) { return a.f - b.f; });
+    var nW = chosen.length;
+    var nS = Math.max(0, Math.min(spaces.length, Math.floor(0.4 * K), K - nW));
+    var wordAt = {};
+    for (i = 0; i < words.length; i++) wordAt[words[i].f] = words[i];
+    var spaceTaps = nS ? pickEvenly(spaces, nS, function (idx) { var nw = wordAt[idx + 1]; return !!(nw && nw.l >= 4); }) : [];
+    // the remaining taps go to words by largest remainder, in proportion to their length
+    var rest = Math.max(0, K - nW - nS), extra = [], weight = 0, given = 0, rem = [];
+    for (i = 0; i < nW; i++) { extra.push(0); weight += Math.max(0, chosen[i].l - 1); }
+    if (rest && weight) {
+      for (i = 0; i < nW; i++) {
+        var share = rest * Math.max(0, chosen[i].l - 1) / weight, fl = Math.floor(share);
+        extra[i] = Math.min(fl, chosen[i].l - 1); given += extra[i]; rem.push({ i: i, r: share - fl });
+      }
+      rem.sort(function (a, b) { return b.r - a.r || a.i - b.i; });
+      for (i = 0; i < rem.length && given < rest; i++) {
+        var wi = rem[i].i;
+        if (extra[wi] < chosen[wi].l - 1) { extra[wi]++; given++; }
+      }
+    }
+    // every draw of a tap comes from its own seed, so the same text types the same way every time
+    var draws = {};
+    function draw(idx) {
+      if (draws[idx]) return draws[idx];
+      var r = mulberry(hash(tapBase + idx)), d = { lvl: r() * 3 - 1.5, f1: (r() - 0.5) * 2, f2: (r() - 0.5) * 2, jit: r() * 0.008, off: r() };
+      if (!vary) d = { lvl: 0, f1: 0, f2: 0, jit: 0, off: 0.5 };
+      draws[idx] = d;
+      return d;
+    }
+    function tOf(idx) { return (startAfter + (idx + 1) * dt) / 1000 + draw(idx).jit; }
+    var priorityOf = function (idx, initial) {
+      var kind = tapKind(text.charAt(idx));
+      if (initial && words.length && idx === words[0].f) return TAP_PRIORITY.space + 1;   // the line always starts with its first key
+      return kind === 'space' ? TAP_PRIORITY.space : (kind === 'punctuation' ? TAP_PRIORITY.punctuation : (initial ? TAP_PRIORITY.initial : TAP_PRIORITY.letter));
+    };
+    var cands = [], spaceSet = {};
+    for (i = 0; i < spaceTaps.length; i++) { spaceSet[spaceTaps[i]] = 1; cands.push({ idx: spaceTaps[i], initial: false }); }
+    for (i = 0; i < nW; i++) {
+      var wd = chosen[i], kj = 1 + extra[i];
+      for (var m = 0; m < kj; m++) {
+        var idx = wd.f + (kj === 1 ? 0 : Math.round(m * (wd.l - 1) / (kj - 1)));
+        if (m === 0 && spaceSet[wd.f - 1]) {
+          // the space bar sounds right before this word, so its first key moves along the word
+          // to the first character far enough after it; a word too short for that keeps quiet
+          var far = -1;
+          for (var ci = wd.f; ci < wd.f + wd.l; ci++) { if (tOf(ci) - tOf(wd.f - 1) >= TAP_GAP) { far = ci; break; } }
+          if (far < 0) continue;
+          idx = far;
+        }
+        cands.push({ idx: idx, initial: m === 0 });
+      }
+    }
+    for (i = 0; i < cands.length; i++) { cands[i].t = tOf(cands[i].idx); cands[i].priority = priorityOf(cands[i].idx, cands[i].initial); }
+    cands.sort(function (a, b) { return a.t - b.t || a.idx - b.idx; });
+    // the minimum gap: the lower priority of two close taps goes
+    var kept = [], taken = {};
+    for (i = 0; i < cands.length; i++) {
+      var cand = cands[i];
+      if (taken[cand.idx]) continue;
+      while (kept.length && cand.t - kept[kept.length - 1].t < TAP_GAP && cand.priority > kept[kept.length - 1].priority) delete taken[kept.pop().idx];
+      if (kept.length && cand.t - kept[kept.length - 1].t < TAP_GAP) continue;
+      kept.push(cand); taken[cand.idx] = 1;
+    }
+    // a tap the gap pass lost comes back on the character nearest the middle of the widest gap
+    for (;;) {
+      if (kept.length >= K) break;
+      var best = null, width = 0;
+      for (i = 0; i <= kept.length; i++) {
+        var lo = i === 0 ? t1 - TAP_GAP : kept[i - 1].t, hi = i === kept.length ? tN + TAP_GAP : kept[i].t;
+        if (hi - lo <= width) continue;
+        var mid = (lo + hi) / 2, pickIdx = -1, dist = Infinity;
+        for (var ci2 = 0; ci2 < N; ci2++) {
+          if (taken[ci2]) continue;
+          var tc = tOf(ci2);
+          if (tc - lo < TAP_GAP || hi - tc < TAP_GAP) continue;
+          if (Math.abs(tc - mid) < dist) { dist = Math.abs(tc - mid); pickIdx = ci2; }
+        }
+        if (pickIdx >= 0) { width = hi - lo; best = { idx: pickIdx, at: i }; }
+      }
+      if (!best) break;
+      var add = { idx: best.idx, t: tOf(best.idx), initial: !!wordAt[best.idx], priority: priorityOf(best.idx, !!wordAt[best.idx]) };
+      kept.splice(best.at, 0, add); taken[best.idx] = 1;
+    }
+    // later letters of a word get a little quieter; the first one a little louder
+    var rank = {}, taps = [];
+    for (i = 0; i < kept.length; i++) {
+      var kp = kept[i], ch = text.charAt(kp.idx), kind = tapKind(ch), d = draw(kp.idx), wj = null;
+      for (var wi2 = 0; wi2 < words.length; wi2++) { if (kp.idx >= words[wi2].f && kp.idx < words[wi2].f + words[wi2].l) { wj = wi2; break; } }
+      var mRank = 0;
+      if (wj != null && kind !== 'space') { mRank = rank[wj] || 0; rank[wj] = mRank + 1; }
+      var db = TAP_TRIM[kind] + d.lvl + (kp.initial ? 0.5 : 0) - 0.3 * mRank;
+      taps.push({ t: kp.t, index: kp.idx, kind: kind, char: ch, initial: kp.initial, gain: fromDb(db),
+        pan: kind === 'space' ? 0 : -0.08 + 0.16 * kp.idx / N, f1: d.f1, f2: d.f2, offset: d.off });
+    }
+    if (out.end !== 'none') {
+      var re = mulberry(hash(tapBase + 'end')), elvl = vary ? re() * 3 - 1.5 : 0, ef1 = vary ? (re() - 0.5) * 2 : 0, ef2 = vary ? (re() - 0.5) * 2 : 0, eoff = vary ? re() : 0.5;
+      taps.push({ t: tN + 0.11, index: N, kind: out.end, char: '', initial: false, gain: fromDb(TAP_TRIM[out.end] + elvl), pan: 0, f1: ef1, f2: ef2, offset: eoff });
+    }
+    out.taps = taps;
+    return out;
+  }
+
+  /* plan.air(spec, { seed }): the swell of paper air. sin^2 in, hold, cos^2 out, with the
+     band of the noise rising from 800 to 1250 Hz and settling to 850. `in` is at least
+     0.3 s and `out` at least 0.5 s, so the air never clicks. Arrays at PARAM_RATE from `from`. */
+  function planAir(spec, o) {
+    o = o || {};
+    spec = spec || {};
+    var tin = Math.max(0.3, +spec['in'] || 0), hold = Math.max(0, +spec.hold || 0), tout = Math.max(0.5, +spec.out || 0);
+    var from = +spec.startAt || 0, to = from + tin + hold + tout;
+    var N = Math.ceil((to - from) * PARAM_RATE) + 1;
+    var env = new Float32Array(N), band = new Float32Array(N);
+    for (var i = 0; i < N; i++) {
+      var u = i / PARAM_RATE, e, f;
+      if (u < tin) { var a = Math.sin(Math.PI / 2 * u / tin); e = a * a; f = 800 * Math.pow(1250 / 800, u / tin); }
+      else if (u < tin + hold) { e = 1; f = 1250; }
+      else { var b = Math.cos(Math.PI / 2 * Math.min(1, (u - tin - hold) / tout)); e = b * b; f = 1250 * Math.pow(850 / 1250, Math.min(1, (u - tin - hold) / tout)); }
+      env[i] = e; band[i] = f;
+    }
+    env[N - 1] = 0;
+    return { rate: PARAM_RATE, from: from, to: to, env: env, band: band, 'in': tin, hold: hold, out: tout,
+      seed: hash(String(o.seed != null ? o.seed : 'sketchy') + '|air|' + (spec.surface || 'deck') + '|' + (spec.key == null ? '' : spec.key)) };
+  }
+
+  var texturePlan = { pen: planPen, typing: planTyping, air: planAir };
+
+  /* ------------------------------------------------------------------ *
    * 4. Musical voices
    *    All take (E, sink, t, f, vel, dur, pan, peak) and play through a slot of
    *    the layer's sink. A voice that finds the pool full is skipped.
@@ -1995,6 +2453,14 @@
         return s ? { name: name, min: s[0], max: s[1], gap: LIMITS[name] } : null;
       },
       render: renderCue
+    },
+    /* Textures: a pen that follows the line, key taps under typed text, paper air.
+       texture.plan.* are pure planners that node can run; see references/sound.md */
+    texture: {
+      plan: texturePlan,
+      shapes: PEN_SHAPES.slice(),
+      info: { pool: TEX_POOL, lanes: ['pen', 'typing', 'air'], minGap: TAP_GAP, levels: { pen: TEX_TARGETS.pen, typing: TEX_TARGETS.letter, air: TEX_TARGETS.air },
+        targets: TEX_TARGETS, surfaces: Object.keys(SURFACE_TRIM) }
     },
     moods: Object.keys(MOODS),
     sections: Object.keys(SECTIONS),
