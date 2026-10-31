@@ -1502,7 +1502,8 @@
     var ch = T.chains[surface] || (T.chains[surface] = { pen: null, air: null });
     if (ch.air) return ch.air;
     var ctx = T.ctx;
-    var A = { surface: surface, src: null, lfos: [], running: false, scheduledUntil: -1, plan: null, idleAt: -1, held: 0 };
+    var A = { surface: surface, src: null, lfos: [], running: false, scheduledUntil: -1, plan: null, idleAt: -1, held: 0,
+      fadeUntil: -1, closing: false };
     A.hp = ctx.createBiquadFilter(); A.hp.type = 'highpass'; A.hp.frequency.value = 160; A.hp.Q.value = 0.5;
     A.bp = ctx.createBiquadFilter(); A.bp.type = 'bandpass'; A.bp.frequency.value = 800; A.bp.Q.value = 0.6;
     A.lp = ctx.createBiquadFilter(); A.lp.type = 'lowpass'; A.lp.frequency.value = 2600; A.lp.Q.value = 0.5;
@@ -1949,11 +1950,10 @@
     var p = planAir({ 'in': spec['in'], hold: spec.hold, out: spec.out, startAt: since + (+spec.startAt || 0), surface: surface, key: spec.key }, { seed: this.seed });
     if (p.to <= tc) return 0;
     var start = Math.max(p.from, tc);
-    if (S.airPlan && !S.airPlan.cancelled && S.airPlan.to > tc) {
-      // a new swell on a surface that still breathes: the old one fades over 300 ms, the new one starts after it
-      this.cancelAir(S.airPlan, tc, 0.3);
-      start = Math.max(start, tc + 0.3);
-    }
+    // a new swell on a surface that still breathes: the old one fades over 300 ms
+    if (S.airPlan && !S.airPlan.cancelled && S.airPlan.to > tc) this.cancelAir(S.airPlan, tc, 0.3);
+    // a swell still letting go, that one or an earlier stop's, reaches silence before the new one begins
+    start = Math.max(start, A.fadeUntil);
     var plan = { id: this.nextId++, lane: 'air', surface: surface, from: p.from, to: p.to, plan: p, start: start, next: -1 };
     this.plans.push(plan); this.ids.push(plan.id); S.airPlan = plan; A.plan = plan;
     airStart(T, A, Math.max(now + 0.005, start - 0.05), this.rnd);
@@ -1997,15 +1997,19 @@
     plan.cancelled = true; plan.to = tc + f;
     holdAt(A.swell.gain, tc, v0); A.swell.gain.linearRampToValueAtTime(0, tc + f);
     if (v0 > 0) this.transitions.push({ t: tc, from: 'air', to: 'silence', length: f });
-    A.plan = null; A.held = 0; A.idleAt = tc + f;
+    A.plan = null; A.held = 0;
+    // a swell that had not begun leaves nothing to wait for
+    A.fadeUntil = v0 > 0 ? tc + f : -1;
+    A.idleAt = tc + f;
   };
 
   /* ---- stops ---- */
+  // fades one plan; default 120 ms, at most 1 s, the air 2 s (a closing step lets its air go that slowly)
   Conductor.prototype.cancel = function (id, fadeMs) {
     var plan = null, i;
     for (i = 0; i < this.plans.length; i++) if (this.plans[i].id === id) plan = this.plans[i];
     if (!plan || plan.cancelled) return false;
-    var tc = this.now() + STOP_LEAD, fade = clamp(fadeMs == null ? 120 : +fadeMs, 12, 1000) / 1000;
+    var tc = this.now() + STOP_LEAD, fade = clamp(fadeMs == null ? 120 : +fadeMs, 12, plan.lane === 'air' ? 2000 : 1000) / 1000;
     if (plan.lane === 'pen') {
       var S = this.surf(plan.surface), drop = {};
       for (i = 0; i < plan.orders.length; i++) drop[plan.orders[i]] = 1;
