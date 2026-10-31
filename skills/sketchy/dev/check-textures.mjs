@@ -280,7 +280,8 @@ async function analyse({ R, policy, nodePlans, wav, calibrate, typingFixtures, s
       if (up.length >= 2 && !inTransition(ws.pen[i].t, ws.pen[i].t + W, trans)) { bad++; if (!worst) worst = `${up.join('+')} at ${ws.pen[i].t.toFixed(2)} s`; }
     }
     push(`F1 ${name}: one texture lane audible at a time outside transitions`, bad === 0, bad ? `${bad} windows, first ${worst}` : `${trans.length} transitions`);
-    const long = trans.filter((x) => x.to !== 'silence' && x.to !== 'lane' && x.length > 0.26);
+    // an air swell declares its own fade in as air -> air; it hands nothing over, so it is not a lane transition
+    const long = trans.filter((x) => x.to !== 'silence' && x.to !== 'lane' && x.from !== x.to && x.length > 0.26);
     push(`F1 ${name}: every lane transition is at most 260 ms`, long.length === 0, long.length ? `${long.length} longer` : '');
   }
 
@@ -404,14 +405,21 @@ async function analyse({ R, policy, nodePlans, wav, calibrate, typingFixtures, s
 
   // F14 air yields
   {
-    const trans = FA.plan.transitions, ws = windows(FA.stems.air), act = [...(FA.plan.surfaces.room ? FA.plan.surfaces.room.activity : [])];
-    for (const p of FA.plan.plans) if (p.lane === 'typing' && !p.cancelled) act.push([p.t1 - 0.02, p.tEnd + 0.25]);
-    let bad = 0, worst = -Infinity;
+    const trans = FA.plan.transitions, ws = windows(FA.stems.air);
+    // a window can only be yielded to from the moment its report arrives (plus LEAD): a stroke that
+    // starts as it is reported opens its window 50 ms in the past, and the air leaves on a declared
+    // lane transition from the report on
+    const reports = [...R.FA.pen, ...R.FA.typing].map((x) => x.at).sort((a, b) => a - b);
+    const known = ([a, b]) => { let at = 0; for (const r of reports) if (r <= b) at = r; return [Math.max(a, at + 0.03), b]; };
+    const act = (FA.plan.surfaces.room ? FA.plan.surfaces.room.activity : []).map(known);
+    for (const p of FA.plan.plans) if (p.lane === 'typing' && !p.cancelled) act.push(known([p.t1 - 0.02, p.tEnd + 0.25]));
+    let bad = 0, worst = -Infinity, first = null;
     for (const x of ws) {
       const inside = act.some(([a, b]) => x.t >= a && x.t + W <= b);
-      if (inside && !inTransition(x.t, x.t + W, trans) && x.db > -70) { bad++; worst = Math.max(worst, x.db); }
+      if (inside && !inTransition(x.t, x.t + W, trans) && x.db > -70) { bad++; worst = Math.max(worst, x.db); if (first === null) first = x.t; }
     }
-    push('F14 F-A: the air stays under -70 dBFS inside every pen or typing activity window', bad === 0, bad ? `${bad} windows, loudest ${worst.toFixed(1)} dBFS` : `${act.length} windows`);
+    const spans = act.map(([a, b]) => `${a.toFixed(2)}-${b.toFixed(2)}`).join(', ');
+    push('F14 F-A: the air stays under -70 dBFS inside every pen or typing activity window', bad === 0, bad ? `${bad} windows, loudest ${worst.toFixed(1)} dBFS, first at ${first.toFixed(2)} s; activity ${spans}` : `${act.length} windows`);
     push('F14 F-C: the air is silent while music plays', loudest(FCm.stems.air) < -90, `${loudest(FCm.stems.air).toFixed(1)} dBFS`);
   }
 
