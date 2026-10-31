@@ -9,7 +9,9 @@
 //
 // Peaks, lengths and tails are measured on the effect bus (level 1, before the master
 // gain of 0.15), so a cue that passes here passes with room to spare when it plays. The
-// "out" columns are the live output: the public renderOffline with the full master chain.
+// "out" columns are what a listener hears: cue.render with master: true, through the live
+// master chain, a cue without a pan on both channels. Loudness is the mean power of the
+// two channels.
 import fs from 'node:fs';
 import path from 'node:path';
 import { ENGINE_DIR, requirePlaywright, launchChromium, parseArgs, say, c, die, isMain } from '../scripts/_lib.mjs';
@@ -29,6 +31,9 @@ const PEAK_LIMIT = 0.9;          // linear, on the effect bus
 const TAIL_DB = -60;             // the last 50 ms of a render of (longest span + 50 ms)
 const EDGE_DB = -48;             // the 2 ms before the sound drops under -60 dBFS: a decay, not a cut
 const SIMILAR_LIMIT = 0.9;       // Pearson correlation of two onset-aligned spectrograms
+// quietest first: contact, selection, motion and outcomes, the celebration
+const LADDER = [['click', 'tap-soft'], ['select', 'toggle-on', 'toggle-off'],
+  ['step-next', 'step-back', 'page-next', 'page-back', 'reveal', 'dismiss', 'sketch-done', 'error-soft'], ['celebrate']];
 const EFFECTS = ['pencil', 'scribble', 'page', 'flip', 'stamp', 'tap', 'tick', 'pop', 'whoosh', 'bell', 'chime', 'success', 'fail', 'paper'];
 
 /* Runs inside the page. Everything heavy stays there; only numbers come back. */
@@ -72,12 +77,12 @@ async function analyse({ seeds, wav, effects, limits }) {
     for (let i = n - Math.round(0.05 * sr); i < n; i++) tail = Math.max(tail, Math.abs(L[i]), Math.abs(R[i]));
     let edge = 0;
     for (let i = Math.max(0, last - Math.round(0.002 * sr)); i <= last && i >= 0; i++) edge = Math.max(edge, Math.abs(L[i]), Math.abs(R[i]));
-    // short-term loudness proxy: the loudest 50 ms RMS window (mono), 5 ms hop
+    // short-term loudness proxy: the loudest 50 ms window of the mean power of both channels, 5 ms hop
     const w = Math.round(0.05 * sr), hop = Math.round(0.005 * sr);
     let loud = 0;
     for (let s = 0; s + w <= n; s += hop) {
       let e = 0;
-      for (let i = s; i < s + w; i++) { const m = (L[i] + R[i]) * 0.5; e += m * m; }
+      for (let i = s; i < s + w; i++) e += (L[i] * L[i] + R[i] * R[i]) * 0.5;
       loud = Math.max(loud, Math.sqrt(e / w));
     }
     return { peak, nan, first, last, tail, edge, loud, length: first < 0 ? 0 : (last - first) / sr, onset: first / sr };
@@ -161,12 +166,13 @@ async function analyse({ seeds, wav, effects, limits }) {
     // the deck path: the public renderer with the full master chain, cue at 0.1 s
     const deck = await S.renderOffline({ mood: 'none', duration: 0.1 + info.max + 0.25, cues: [{ t: 0.1, name }] });
     const lvD = levels(deck);
+    const lvO = levels(await S.cue.render(name, { master: true, vary: false, key: 'C' }));
     out.cues.push({
       name, min: info.min, max: info.max, gap: info.gap,
       lenMin: Math.min(...runs.map((r) => r.length)), lenMax: Math.max(...runs.map((r) => r.length)),
       peak: Math.max(...runs.map((r) => r.peak)), nan: runs.reduce((s, r) => s + r.nan, 0),
       tail: Math.max(...runs.map((r) => r.tail)), edge: Math.max(...runs.map((r) => r.edge)),
-      outPeakDb: db(lvD.peak), outLoudDb: db(lvD.loud), centroid: centroid(nom, lvN),
+      outPeakDb: db(lvO.peak), outLoudDb: db(lvO.loud), centroid: centroid(nom, lvN),
       same, selfSim, deckPeak: lvD.peak, deckNan: lvD.nan, deckHeard: lvD.peak > T60,
     });
   }
@@ -178,7 +184,7 @@ async function analyse({ seeds, wav, effects, limits }) {
   for (const e of effects) {
     const buf = await S.cue.render(e, { vary: false, level: 1, key: 'C', duration: 1.5 });
     const lv = levels(buf), fp = fingerprint(buf, lv);
-    const live = levels(await S.renderOffline({ mood: 'none', duration: 2, cues: [{ t: 0.1, name: e }] }));
+    const live = levels(await S.cue.render(e, { master: true, vary: false, key: 'C', duration: 2 }));
     out.effects.push({ name: e, outLoudDb: db(live.loud) });
     for (const n of names) out.refs.push({ a: n, b: e, s: similarity(prints[n], fp) });
   }
@@ -188,6 +194,10 @@ async function analyse({ seeds, wav, effects, limits }) {
   const pair = await S.renderOffline({ mood: 'none', duration: 0.6, cues: [{ t: 0.1, name: 'click' }, { t: 0.115, name: 'select' }] });
   const forced = await S.renderOffline({ mood: 'none', duration: 0.6, cues: [{ t: 0.1, name: 'click' }, { t: 0.115, name: 'select', opts: { force: true } }] });
   out.checks.push({ what: 'a second cue 15 ms after the first is dropped', ok: S.hashBuffer(solo) === S.hashBuffer(pair) });
+  // a cue without a pan is mono: it must reach both channels at the same level, as the speakers play it
+  const mono = await S.cue.render('click', { vary: false, level: 1 });
+  const chE = (ch) => { const d = mono.getChannelData(ch); let s = 0; for (let i = 0; i < d.length; i++) s += d[i] * d[i]; return s; };
+  out.checks.push({ what: 'a cue without a pan reaches both channels at the same level', ok: chE(0) > 0 && Math.abs(chE(0) - chE(1)) <= 1e-9 * chE(0) });
   out.checks.push({ what: 'force: true plays it anyway', ok: S.hashBuffer(solo) !== S.hashBuffer(forced) });
   // cues in a render with music follow the music's key and stay clean
   const withMusic = await S.renderOffline({ mood: 'sketchbook', seed: 'cue-check', duration: 6,
@@ -271,8 +281,8 @@ async function main() {
   const ms = (s) => (s * 1000).toFixed(0);
   let bad = 0;
   say.line(c.bold(`UI cues: ${res.cues.length}, each rendered nominal + ${seeds} seeded variations + twice for determinism`));
-  say.line(c.dim('levels on the effect bus, except "out": the live output through the master chain (renderOffline);'));
-  say.line(c.dim('"out loud" is the loudest 50 ms RMS window'));
+  say.line(c.dim('levels on the effect bus, except "out": what a listener hears (master chain, both channels);'));
+  say.line(c.dim('"out loud" is the loudest 50 ms of the mean power of both channels'));
   say.line();
   const head = ['cue', 'span ms', 'length ms', 'peak', 'last 50ms', 'end 2ms', 'out peak', 'out loud', 'centroid', 'self', ''];
   const rows = res.cues.map((q) => {
@@ -298,6 +308,11 @@ async function main() {
   say.line(`deck path (renderOffline, full master chain): highest peak ${dB(Math.max(...res.cues.map((q) => q.deckPeak)))} dBFS`);
 
   say.line(`existing effects, out loud for reference: ${res.effects.map((e) => `${e.name} ${e.outLoudDb.toFixed(1)}`).join(', ')}`);
+  // the loudness ladder as heard: each tier stays under the next one
+  const loudOf = Object.fromEntries(res.cues.map((q) => [q.name, q.outLoudDb]));
+  const tiers = LADDER.map((t) => ({ t, lo: Math.min(...t.map((n) => loudOf[n])), hi: Math.max(...t.map((n) => loudOf[n])) }));
+  const ladderOk = tiers.every((x, i) => i === 0 || tiers[i - 1].hi < x.lo);
+  res.checks.unshift({ what: `loudness ladder as heard: ${tiers.map((x) => `${x.t.join(' ')} ${x.lo.toFixed(1)}..${x.hi.toFixed(1)}`).join('  <  ')}`, ok: ladderOk });
 
   const pairs = res.pairs.slice().sort((a, b) => b.s - a.s);
   const refs = res.refs.slice().sort((a, b) => b.s - a.s);

@@ -912,12 +912,13 @@
   }
   var CUE_LIMITS = { click: 0.04, 'tap-soft': 0.05, select: 0.06, 'toggle-on': 0.08, 'toggle-off': 0.08, 'step-next': 0.09,
     'step-back': 0.09, 'page-next': 0.22, 'page-back': 0.22, reveal: 0.12, dismiss: 0.12, 'sketch-done': 0.35, celebrate: 1.2, 'error-soft': 0.35 };
-  /* Trims measured with offline renders, as the loudest 50 ms through the live master
-     chain: click and tap-soft near -41 dBFS, selection, steps and page changes -40 to
-     -38, sketch-done and error-soft -36, celebrate -32. The deck effects for comparison:
-     tick -44, tap -39, page -33, pencil -31, stamp -25. */
-  var CUE_CAL = { click: 1.24, 'tap-soft': 0.92, select: 1.01, 'toggle-on': 1.06, 'toggle-off': 1.15, 'step-next': 1.2, 'step-back': 1.15,
-    'page-next': 1.88, 'page-back': 1.8, reveal: 0.87, dismiss: 1.82, 'sketch-done': 1.06, celebrate: 1.27, 'error-soft': 1.36 };
+  /* Trims measured as a listener hears the nominal cue: the loudest 50 ms of the mean
+     power of both channels, through the live master chain (cue.render with master: true;
+     a cue without a pan plays on both speakers). click and tap-soft near -42 dBFS,
+     select and the toggles about -40.5, steps, page changes, reveal and dismiss -39.5 to
+     -37.5, sketch-done and error-soft about -35.5, celebrate -31.5. */
+  var CUE_CAL = { click: 0.56, 'tap-soft': 0.4, select: 0.46, 'toggle-on': 0.44, 'toggle-off': 0.49, 'step-next': 1.2, 'step-back': 1.15,
+    'page-next': 1.88, 'page-back': 1.8, reveal: 0.87, dismiss: 0.91, 'sketch-done': 1.06, celebrate: 1.27, 'error-soft': 0.68 };
   for (cn in CUE_LIMITS) { LIMITS[cn] = CUE_LIMITS[cn]; CAL[cn] = CUE_CAL[cn]; }
 
   /* Trigger one effect at absolute time t on a rig. Used by live play() and by cues
@@ -1617,13 +1618,15 @@
     });
   }
 
-  /* renderCue(name, { seed, key, mood, sampleRate, duration, level, vary, gain, pan, pitch })
-     renders one effect or cue on its own: no music and no master chain, the effect bus
-     scaled by `level` (default MASTER, the master gain; the live compressor then adds
-     3 to 6 dB of makeup gain; 1 is the bus itself). The key comes from `key`, else from
-     the seed and mood. The length
-     defaults to a cue's longest span plus 50 ms, or 3 s for other effects. vary: false
-     plays the nominal recipe, with every random draw at the middle of its range. */
+  /* renderCue(name, { seed, key, mood, sampleRate, duration, level, master, vary, gain, pan, pitch })
+     renders one effect or cue on its own, without music: the effect bus scaled by
+     `level` (default MASTER, the master gain; 1 is the bus itself). master: true also
+     runs it through the live master chain (high-pass, compressor, limiter), which is
+     what a listener hears. The key comes from `key`, else from the seed and mood. The
+     length defaults to a cue's longest span plus 50 ms, or 3 s for other effects.
+     vary: false plays the nominal recipe, with every random draw at the middle of its range.
+     A sound without a pan is mono, and the speakers play it on both sides, so the bus
+     is lifted to stereo the same way before it is split into channels. */
   function renderCue(name, o) {
     o = o || {};
     var OAC = global.OfflineAudioContext || global.webkitOfflineAudioContext;
@@ -1639,10 +1642,16 @@
     R.key = { tonic: H.tonic, scale: H.scale };
     trigger(R, name, 0, o);
     var sp1 = ctx.createChannelSplitter(2), sp2 = ctx.createChannelSplitter(2), mg = ctx.createChannelMerger(4);
-    R.premix.connect(sp1); R.revSend.connect(sp2);
+    var stereo = function (node) {
+      var g = ctx.createGain();
+      g.channelCount = 2; g.channelCountMode = 'explicit'; g.channelInterpretation = 'speakers';
+      node.connect(g);
+      return g;
+    };
+    stereo(R.premix).connect(sp1); stereo(R.revSend).connect(sp2);
     sp1.connect(mg, 0, 0); sp1.connect(mg, 1, 1); sp2.connect(mg, 0, 2); sp2.connect(mg, 1, 3);
     mg.connect(ctx.destination);
-    var level = o.level == null ? MASTER : +o.level;
+    var level = o.level == null ? MASTER : +o.level, pad = Math.round(0.1 * sr);
     return runOffline(ctx).then(function (stems) {
       var d0 = stems.getChannelData(0), d1 = stems.getChannelData(1), w0 = stems.getChannelData(2), w1 = stems.getChannelData(3), j;
       var wet = null;
@@ -1652,7 +1661,17 @@
         a[j] = (d0[j] + (wet ? wet[0][j] : 0)) * level;
         b[j] = (d1[j] + (wet ? wet[1][j] : 0)) * level;
       }
-      return out;
+      if (!o.master) return out;
+      // the master chain, started 100 ms early so its compressor has settled when the sound begins
+      var ctx3 = new OAC(2, len + pad, sr), src = ctx3.createBufferSource(), chain = masterChain(ctx3);
+      chain.master.gain.value = 1;
+      src.buffer = out; src.connect(chain.master); src.start(pad / sr);
+      return runOffline(ctx3).then(function (full) {
+        var res = ctx.createBuffer(2, len, sr);
+        res.copyToChannel(full.getChannelData(0).subarray(pad), 0);
+        res.copyToChannel(full.getChannelData(1).subarray(pad), 1);
+        return res;
+      });
     });
   }
 

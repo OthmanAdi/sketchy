@@ -128,7 +128,7 @@ SketchySound.enable() / .disable() / .toggle() / .isOn
 SketchySound.play(name, { gain, pan, pitch })        // 'pencil','scribble','page','flip','stamp','tap','tick','pop','whoosh','bell','chime','success','fail','paper'
                                                      // and the UI cues in SketchySound.cue.names: 'click','tap-soft','select','toggle-on', ...
 SketchySound.cue.info(name)                          // -> { name, min, max, gap } in seconds
-SketchySound.cue.render(name, { seed, key, level, vary })  // -> Promise<AudioBuffer>, one cue, dry, no master chain
+SketchySound.cue.render(name, { seed, key, level, master, vary })  // -> Promise<AudioBuffer>, one cue; master: true = as heard
 SketchySound.hotkey = false                          // the s key stops toggling sound (for a host app with its own mute)
 SketchySound.music.start({ mood, seed })            // generative; mood: 'sketchbook' | 'ledger' | 'focus' | 'calm'
 SketchySound.music.section('calm' | 'build' | 'flight' | 'resolve')
