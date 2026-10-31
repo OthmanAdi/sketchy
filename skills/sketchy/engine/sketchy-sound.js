@@ -1934,9 +1934,9 @@
   Conductor.prototype.cancelTyping = function (plan, tc, fade) {
     if (plan.cancelled) return;
     plan.cancelled = true; plan.to = tc + fade;
-    // the taps still ahead are dropped; the ones already rendered stay on record for the gap rule
-    plan.taps = plan.taps.slice(0, plan.next);
+    // the taps still ahead are dropped; the ones already rendered that the fade has not silenced stay on record for the gap rule
     var f = Math.max(fade, MIN_RAMP);
+    plan.taps = plan.taps.slice(0, plan.next).filter(function (tap) { return tap.t <= tc + f; });
     for (var i = 0; i < plan.gains.length; i++) {
       var g = plan.gains[i].g.gain;
       holdAt(g, tc, g.value); g.linearRampToValueAtTime(0, tc + f);
