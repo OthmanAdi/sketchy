@@ -940,6 +940,7 @@
       pan: o.pan != null ? clamp(+o.pan, -1, 1) : null
     };
     fn(R.sfxEnv, t + r() * 0.008, v);
+    if (R.tex) texDuck(R, name, t);   // every admitted cue ducks the textures, live and offline alike
     return true;
   }
 
@@ -1048,11 +1049,12 @@
   function prepStroke(s, idx, seedBase, surface, key, vary) {
     var shape = SHAPES.hasOwnProperty(s.shape) ? s.shape : 'line', P = SHAPES[shape];
     var start = +s.start || 0, D = Math.max(0.05, +s.duration || 0.66);
+    var sk = s.key != null ? String(s.key) : key;   // a stroke in a surface union keeps its own report's key
     var st = {
       shape: shape, P: P, start: start, D: D, end: start + D, silent: !P, order: idx,
       x0: s.x0 == null ? 0.5 : +s.x0, x1: s.x1 == null ? 0.5 : +s.x1,
-      ease: easing(s.easing), trim: P ? fromDb(P.trim) : 0,
-      seed: hash(seedBase + '|pen|' + surface + '|' + key + '|' + idx + '|' + start.toFixed(3)),
+      ease: easing(s.easing), trim: P ? fromDb(P.trim + (+s.levelDb || 0)) : 0,
+      seed: hash(seedBase + '|pen|' + surface + '|' + sk + '|' + idx + '|' + start.toFixed(3)),
       accents: [], corners: [], subs: 0, phi: 0, mid: start + D / 2
     };
     if (!P) return st;
@@ -1594,6 +1596,503 @@
     g.setTargetAtTime(1, until, tau);
     T.duckState = { at: t0, v0: v0, attackEnd: t + 0.010, depth: depth, until: until, tau: tau };
   }
+
+  /* ------------------------------------------------------------------ *
+   * 3f. The conductor: which lane sounds, when it hands over, how it stops.
+   *     Surfaces: room, sidebar, wizard (a host app) and deck; only the surface that
+   *     reported last plays. Lanes: pen, typing, air, each idle -> scheduled -> active
+   *     -> fading -> idle. Priority typing > pen > air: the lane gains are curves of
+   *     time computed from every plan, and every ramp between lanes is a declared
+   *     transition. Live, a 25 ms tick emits the next 120 ms of automation; offline,
+   *     the same emit runs once over the whole render. No gain ever jumps: a replan
+   *     continues from the old plan's value at tc, a stop holds and ramps.
+   * ------------------------------------------------------------------ */
+  var FADE_POLICY = {
+    step:    { pen: 0.16, typing: 0.12, air: 0.3 },
+    replay:  { pen: 0.16, typing: 0.12, air: 0.3 },
+    close:   { pen: 0.25, typing: 0.12, air: 0.4 },
+    mute:    { pen: 0.12, typing: 0.12, air: 0.12 },
+    hidden:  { pen: 0.12, typing: 0.12, air: 0.12 },
+    reduced: { pen: 0.2,  typing: 0.2,  air: 0.2 },
+    surface: { pen: 0.16, typing: 0.12, air: 0.3 }
+  };
+  var LANE_FADE = { pen: 0.2, typing: 0.12, air: 0.25 };   // a lane ramp that is not in a plan's own curve
+  var LANE_NAMES = ['pen', 'typing', 'air'];
+
+  // cancel the automation of a param from t on and hold the value the model has there
+  function holdAt(param, t, v) {
+    if (param.cancelAndHoldAtTime) { try { param.cancelAndHoldAtTime(t); } catch (e) { param.cancelScheduledValues(t); } }
+    else param.cancelScheduledValues(t);
+    param.setValueAtTime(v, t);
+  }
+  function curveAt(pts, t) {
+    if (!pts.length) return 0;
+    if (t <= pts[0][0]) return pts[0][1];
+    for (var i = 1; i < pts.length; i++) {
+      if (t <= pts[i][0]) {
+        var a = pts[i - 1], b = pts[i];
+        return b[0] === a[0] ? b[1] : a[1] + (b[1] - a[1]) * (t - a[0]) / (b[0] - a[0]);
+      }
+    }
+    return pts[pts.length - 1][1];
+  }
+  function raisedCos(u) { var s = Math.sin(Math.PI / 2 * clamp(u, 0, 1)); return s * s; }
+  // an equal-power ramp from `from` to `to` over [a, b], one point every 10 ms
+  function rampPoints(a, b, from, to, into) {
+    var n = Math.max(2, Math.round((b - a) / 0.01));
+    for (var i = 0; i <= n; i++) { var u = i / n; into.push([a + (b - a) * u, from + (to - from) * raisedCos(u)]); }
+    return into;
+  }
+  function arrAt(arr, t0, rate, t) {
+    if (!arr.length) return 0;
+    var x = (t - t0) * rate, i = Math.floor(x);
+    if (i < 0) return arr[0];
+    if (i >= arr.length - 1) return arr[arr.length - 1];
+    return arr[i] + (arr[i + 1] - arr[i]) * (x - i);
+  }
+
+  function Conductor(R, o) {
+    o = o || {};
+    this.R = R; this.ctx = R.ctx; this.offline = !!R.offline;
+    this.seed = String(o.seed != null ? o.seed : 'sketchy');
+    this.rnd = mulberry(hash(this.seed + '|texture'));
+    this.cal = o.cal || null; this.probe = o.probe || null;
+    this.solo = o.solo || null;           // a stem pass: only this lane's gain follows its curve
+    this.musicOn = o.music || function () { return false; };
+    this.clock = o.clock || null;         // offline: the time of the event being processed
+    this.T = null;
+    this.surface = null; this.surfaces = {};
+    this.plans = []; this.nextId = 1; this.ids = [];
+    this.lanes = {};
+    for (var i = 0; i < LANE_NAMES.length; i++) this.lanes[LANE_NAMES[i]] = { name: LANE_NAMES[i], curve: [], fadeUntil: -1, until: -1 };
+    this.transitions = [];
+    this.lastTap = -Infinity;
+    this.refused = false; this.muted = false;
+    this.timer = 0;
+  }
+  Conductor.prototype.now = function () { return this.clock ? this.clock() : this.ctx.currentTime; };
+  Conductor.prototype.rig = function () {
+    if (!this.T) {
+      this.T = buildTexture(this.R, { probe: this.probe, cal: this.cal });
+      for (var i = 0; i < LANE_NAMES.length; i++) this.lanes[LANE_NAMES[i]].gain = this.T.lanes[LANE_NAMES[i]];
+    }
+    return this.T;
+  };
+  /* Host timelines carry `since`, the performance.now() of their t = 0, in ms. The output
+     timestamp maps it onto the context clock; without one the report counts as now.
+     Offline, `since` is in render seconds and defaults to the time of the report. */
+  Conductor.prototype.hostTime = function (since) {
+    if (since == null) return this.now();
+    if (this.offline) return +since;
+    var ts = null;
+    try { ts = this.ctx.getOutputTimestamp ? this.ctx.getOutputTimestamp() : null; } catch (e) { ts = null; }
+    if (ts && ts.performanceTime != null && ts.contextTime != null) return ts.contextTime + (+since - ts.performanceTime) / 1000;
+    return this.now();
+  };
+  Conductor.prototype.surf = function (name) {
+    return this.surfaces[name] || (this.surfaces[name] = { name: name, strokes: [], order: 0, penPlan: null, airPlan: null, key: '' });
+  };
+  Conductor.prototype.laneAt = function (name, t) { return curveAt(this.lanes[name].curve, t); };
+
+  /* ---- lane gains from the plans (6.2) ---- */
+  Conductor.prototype.laneCurves = function (tc) {
+    var i, typ = [], act = [], trans = [], plans = this.plans;
+    var S = this.surface ? this.surf(this.surface) : null;
+    for (i = 0; i < plans.length; i++) {
+      var p = plans[i];
+      if (p.cancelled || p.surface !== this.surface) continue;
+      if (p.lane === 'typing') { typ.push([p.t1, p.tEnd]); act.push([p.t1 - 0.02, p.tEnd + 0.25]); }
+    }
+    if (S && S.penPlan) for (i = 0; i < S.penPlan.activity.length; i++) act.push(S.penPlan.activity[i]);
+    typ.sort(function (a, b) { return a[0] - b[0]; });
+    var win = [];
+    for (i = 0; i < typ.length; i++) {
+      var last = win[win.length - 1];
+      if (last && typ[i][0] - 0.2 <= last[1] + 0.4) last[1] = Math.max(last[1], typ[i][1]);
+      else win.push([typ[i][0], typ[i][1]]);
+    }
+    var pen = [], typing = [], air = [];
+    for (i = 0; i < win.length; i++) {
+      var t1 = win[i][0], tEnd = win[i][1];
+      rampPoints(t1 - 0.2, t1, 1, 0, pen); pen.push([tEnd + 0.15, 0]); rampPoints(tEnd + 0.15, tEnd + 0.4, 0, 1, pen);
+      typing.push([t1 - 0.04, 0], [t1 - 0.02, 1], [tEnd + 0.25, 1], [tEnd + 0.37, 0]);
+      trans.push({ t: t1 - 0.2, from: 'pen', to: 'typing', length: 0.2 }, { t: tEnd + 0.15, from: 'typing', to: 'pen', length: 0.25 });
+    }
+    if (!pen.length) pen.push([tc, 1]);
+    if (!typing.length) typing.push([tc, 0]);
+    if (this.musicOn()) air.push([tc, 0]);
+    else {
+      var spans = mergeSpans(act, 0.8);
+      for (i = 0; i < spans.length; i++) {
+        var a = spans[i][0], b = spans[i][1];
+        rampPoints(a - 0.25, a, 1, 0, air); air.push([b, 0]); rampPoints(b, b + 0.25, 0, 1, air);
+        trans.push({ t: a - 0.25, from: 'air', to: 'pen', length: 0.25 }, { t: b, from: 'pen', to: 'air', length: 0.25 });
+      }
+      if (!air.length) air.push([tc, 1]);
+    }
+    return { pen: pen, typing: typing, air: air, transitions: trans };
+  };
+  // emit a lane's new curve from tc: hold the value there, ramp to the curve if it sits elsewhere, then follow it
+  Conductor.prototype.setLane = function (name, tc, curve, fade) {
+    var lane = this.lanes[name], v0 = this.laneAt(name, tc), pts = [[tc, v0]], i;
+    var target = curveAt(curve, tc), start = tc;
+    if (Math.abs(target - v0) > 1e-4) {
+      var f = Math.max(fade || LANE_FADE[name], MIN_RAMP);
+      start = tc + f;
+      pts.push([start, curveAt(curve, start)]);
+      this.transitions.push({ t: tc, from: name, to: 'lane', length: f });
+    }
+    for (i = 0; i < curve.length; i++) if (curve[i][0] > start) pts.push(curve[i]);
+    lane.curve = pts; lane.fadeUntil = -1;
+    lane.until = pts[pts.length - 1][0];
+    if (!lane.gain || (this.solo && this.solo !== name)) return;
+    var g = lane.gain.gain;
+    holdAt(g, tc, v0);
+    for (i = 1; i < pts.length; i++) g.linearRampToValueAtTime(pts[i][1], pts[i][0]);
+  };
+  Conductor.prototype.replanLanes = function (tc) {
+    var c = this.laneCurves(tc);
+    this.transitions = this.transitions.filter(function (x) { return (x.to === 'silence' || x.to === 'lane') && x.t + x.length > tc - 2; });
+    for (var i = 0; i < c.transitions.length; i++) this.transitions.push(c.transitions[i]);
+    this.setLane('pen', tc, c.pen); this.setLane('typing', tc, c.typing); this.setLane('air', tc, c.air);
+  };
+  // a stop: hold the lane where it is and ramp to silence
+  Conductor.prototype.fadeLane = function (name, tc, len) {
+    var lane = this.lanes[name], v0 = this.laneAt(name, tc);
+    lane.curve = [[tc, v0], [tc + len, 0]]; lane.fadeUntil = tc + len; lane.until = tc + len;
+    if (v0 > 0) this.transitions.push({ t: tc, from: name, to: 'silence', length: len });
+    if (!lane.gain || (this.solo && this.solo !== name)) return;
+    holdAt(lane.gain.gain, tc, v0);
+    lane.gain.gain.linearRampToValueAtTime(0, tc + len);
+  };
+
+  /* ---- pen ---- */
+  Conductor.prototype.penScale = function (surface) { return this.rig().cal.pen * fromDb(SURFACE_TRIM[surface] || 0); };
+  Conductor.prototype.replanPen = function (surface, tc, blend) {
+    var S = this.surf(surface), T = this.rig(), P = penChain(T, surface), old = S.penPlan, i;
+    S.strokes = S.strokes.filter(function (s) { return s.start + s.duration + 0.5 > tc; });
+    if (S.strokes.length > MAX_STROKES) { S.strokes.sort(function (a, b) { return a.start - b.start; }); S.strokes = S.strokes.slice(S.strokes.length - MAX_STROKES); }
+    var init = old ? { L: arrAt(old.L, old.t0, old.rate, tc), pan: arrAt(old.pan, old.t0, old.paramRate, tc),
+      sigma: (arrAt(old.fc, old.t0, old.paramRate, tc) / Math.max(1e-6, arrAt(old.band, old.t0, old.paramRate, tc)) - 1900) / 1500,
+      m: arrAt(old.band, old.t0, old.paramRate, tc) } : null;
+    var plan = planPen({ strokes: S.strokes, surface: surface, key: S.key }, { seed: this.seed, from: tc, init: init });
+    if (old && blend > 0 && plan.n) {
+      var nb = Math.max(1, Math.round(blend * plan.rate));
+      for (i = 0; i <= nb && i < plan.n; i++) {
+        var u = i / nb, t = tc + i / plan.rate;
+        plan.L[i] = arrAt(old.L, old.t0, old.rate, t) * (1 - u) + plan.L[i] * u;
+        if (i % 2 === 0) {
+          var j = i >> 1;
+          plan.fc[j] = arrAt(old.fc, old.t0, old.paramRate, t) * (1 - u) + plan.fc[j] * u;
+          plan.q[j] = arrAt(old.q, old.t0, old.paramRate, t) * (1 - u) + plan.q[j] * u;
+          plan.lp[j] = arrAt(old.lp, old.t0, old.paramRate, t) * (1 - u) + plan.lp[j] * u;
+          plan.amRate[j] = arrAt(old.amRate, old.t0, old.paramRate, t) * (1 - u) + plan.amRate[j] * u;
+          plan.amDepth[j] = arrAt(old.amDepth, old.t0, old.paramRate, t) * (1 - u) + plan.amDepth[j] * u;
+          plan.pan[j] = arrAt(old.pan, old.t0, old.paramRate, t) * (1 - u) + plan.pan[j] * u;
+        }
+      }
+    }
+    S.penPlan = plan; P.plan = plan; P.scheduledUntil = 0; P.idleAt = -1;
+    if (!plan.n) {
+      // nothing left to draw: hold where the voice is and let it go
+      var cur = init ? init.L * this.penScale(surface) : 0, f = Math.max(blend || 0, 0.08);
+      P.plan = null; S.penPlan = null; P.scheduledUntil = -1;
+      holdAt(P.pressure.gain, tc, cur);
+      if (cur > 0) { P.pressure.gain.linearRampToValueAtTime(0, tc + f); this.transitions.push({ t: tc, from: 'pen', to: 'silence', length: f }); }
+      P.idleAt = tc + f;
+      return;
+    }
+    penStart(T, P, Math.max(this.now() + 0.005, tc - 0.05), this.rnd);
+    this.penHold(P, tc, plan.L[0] * this.penScale(surface), plan);
+  };
+  // hold every pen param at tc (the start of a replan or of a stop)
+  Conductor.prototype.penHold = function (P, tc, pressure, plan) {
+    holdAt(P.pressure.gain, tc, pressure);
+    if (!plan) return;
+    holdAt(P.bp.frequency, tc, plan.fc[0]); holdAt(P.bp.Q, tc, plan.q[0]); holdAt(P.lp.frequency, tc, plan.lp[0]);
+    holdAt(P.ld.gain, tc, plan.amDepth[0]);
+    if (P.lfo) holdAt(P.lfo.frequency, tc, plan.amRate[0]);
+    if (P.pan) holdAt(P.pan.pan, tc, plan.pan[0]);
+  };
+  Conductor.prototype.emitPen = function (P, until) {
+    var plan = P.plan;
+    if (!plan || !plan.n || P.scheduledUntil >= plan.n - 1) return;
+    var g = this.penScale(P.surface), iEnd = Math.min(plan.n - 1, Math.floor((until - plan.t0) * plan.rate));
+    for (var i = P.scheduledUntil + 1; i <= iEnd; i++) {
+      var t = plan.t0 + i / plan.rate;
+      P.pressure.gain.linearRampToValueAtTime(plan.L[i] * g, t);
+      if (i % 2) continue;
+      var j = i >> 1;
+      P.bp.frequency.linearRampToValueAtTime(plan.fc[j], t); P.bp.Q.linearRampToValueAtTime(plan.q[j], t);
+      P.lp.frequency.linearRampToValueAtTime(plan.lp[j], t); P.ld.gain.linearRampToValueAtTime(plan.amDepth[j], t);
+      if (P.lfo) P.lfo.frequency.linearRampToValueAtTime(plan.amRate[j], t);
+      if (P.pan) P.pan.pan.linearRampToValueAtTime(plan.pan[j], t);
+    }
+    if (iEnd > P.scheduledUntil) P.scheduledUntil = iEnd;
+    if (P.scheduledUntil >= plan.n - 1) P.idleAt = plan.window[1];
+  };
+  Conductor.prototype.pen = function (timeline) {
+    timeline = timeline || {};
+    if (this.refused || this.muted) return 0;
+    var surface = timeline.surface || 'deck', now = this.now(), tc = now + LEAD;
+    if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
+    this.surface = surface;
+    var S = this.surf(surface), since = this.hostTime(timeline.since), list = timeline.strokes || [], added = [], i;
+    var levelDb = LEVEL_TRIM[timeline.level] || 0, key = timeline.key != null ? String(timeline.key) : '';
+    for (i = 0; i < list.length; i++) {
+      var s = list[i], start = since + (+s.start || 0), D = Math.max(0.05, +s.duration || 0.66);
+      var shape = SHAPES.hasOwnProperty(s.shape) ? s.shape : 'line';
+      if (!SHAPES[shape]) continue;                                    // dot, text: silent
+      if (start < tc && start + D - tc < 0.12) continue;               // too little of it is left
+      added.push({ start: start, duration: D, shape: shape, easing: s.easing, marks: s.marks, x0: s.x0, x1: s.x1, phi: s.phi,
+        key: key, levelDb: levelDb, order: S.order++ });
+    }
+    if (!added.length) return 0;
+    S.key = key;
+    for (i = 0; i < added.length; i++) S.strokes.push(added[i]);
+    var from = Infinity, to = -Infinity;
+    for (i = 0; i < added.length; i++) { from = Math.min(from, added[i].start); to = Math.max(to, added[i].start + added[i].duration + 0.35); }
+    var plan = { id: this.nextId++, lane: 'pen', surface: surface, from: from, to: to, orders: added.map(function (a) { return a.order; }) };
+    this.plans.push(plan); this.ids.push(plan.id);
+    this.replanPen(surface, tc, MIN_RAMP);
+    this.replanLanes(tc);
+    this.arm();
+    return plan.id;
+  };
+
+  /* ---- typing ---- */
+  Conductor.prototype.typing = function (spec) {
+    spec = spec || {};
+    if (this.refused || this.muted) return 0;
+    var surface = spec.surface || 'deck', now = this.now(), tc = now + LEAD;
+    if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
+    this.surface = surface;
+    var since = this.hostTime(spec.since), p = planTyping(spec, { seed: this.seed }), taps = [], i;
+    for (i = 0; i < p.taps.length; i++) {
+      var t = since + p.taps[i].t;
+      if (t < now + 0.005) continue;                                  // a tap in the past is dropped
+      if (t - this.lastTap < TAP_GAP) continue;                       // never on top of another plan's tap
+      var tap = {}; for (var k in p.taps[i]) tap[k] = p.taps[i][k];
+      tap.t = t; taps.push(tap); this.lastTap = t;
+    }
+    if (!taps.length) return 0;
+    // at most two plans alive: a restarted line fades the old one while the new one starts
+    var alive = this.plans.filter(function (x) { return x.lane === 'typing' && !x.cancelled; });
+    while (alive.length >= 2) this.cancelTyping(alive.shift(), tc, 0.12);
+    var tEnd = taps[taps.length - 1].t;
+    var plan = { id: this.nextId++, lane: 'typing', surface: surface, from: since + p.t1 - 0.04, to: tEnd + 0.37, t1: since + p.t1, tEnd: tEnd,
+      taps: taps, next: 0, gains: [], end: p.end };
+    this.plans.push(plan); this.ids.push(plan.id);
+    this.rig();
+    this.replanLanes(tc);
+    this.arm();
+    return plan.id;
+  };
+  Conductor.prototype.emitTyping = function (plan, until) {
+    var T = this.rig(), now = this.now();
+    while (plan.next < plan.taps.length && plan.taps[plan.next].t <= until) {
+      var tap = plan.taps[plan.next++];
+      if (tap.t < now - 0.001) continue;
+      if (!T.probe) tapVoice(T, tap, tap.t, plan.gains, T.cal.typing * tap.gain);
+    }
+  };
+  Conductor.prototype.cancelTyping = function (plan, tc, fade) {
+    if (plan.cancelled) return;
+    plan.cancelled = true; plan.next = plan.taps.length; plan.to = tc + fade;
+    var f = Math.max(fade, MIN_RAMP);
+    for (var i = 0; i < plan.gains.length; i++) {
+      var g = plan.gains[i].g.gain;
+      holdAt(g, tc, g.value); g.linearRampToValueAtTime(0, tc + f);
+    }
+  };
+
+  /* ---- air ---- */
+  Conductor.prototype.air = function (spec) {
+    spec = spec || {};
+    if (this.refused || this.muted) return 0;
+    var surface = spec.surface || 'deck', now = this.now(), tc = now + LEAD;
+    if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
+    this.surface = surface;
+    var T = this.rig(), A = airChain(T, surface), S = this.surf(surface), since = this.hostTime(spec.since);
+    var p = planAir({ 'in': spec['in'], hold: spec.hold, out: spec.out, startAt: since + (+spec.startAt || 0), surface: surface, key: spec.key }, { seed: this.seed });
+    if (p.to <= tc) return 0;
+    var start = Math.max(p.from, tc);
+    if (S.airPlan && !S.airPlan.cancelled && S.airPlan.to > tc) {
+      // a new swell on a surface that still breathes: the old one fades over 300 ms, the new one starts after it
+      this.cancelAir(S.airPlan, tc, 0.3);
+      start = Math.max(start, tc + 0.3);
+    }
+    var plan = { id: this.nextId++, lane: 'air', surface: surface, from: p.from, to: p.to, plan: p, start: start, next: -1 };
+    this.plans.push(plan); this.ids.push(plan.id); S.airPlan = plan; A.plan = plan;
+    airStart(T, A, Math.max(now + 0.005, start - 0.05), this.rnd);
+    A.scheduledUntil = -1; A.idleAt = -1;
+    this.replanLanes(tc);
+    this.arm();
+    return plan.id;
+  };
+  Conductor.prototype.emitAir = function (A, until) {
+    var plan = A.plan;
+    if (!plan || plan.cancelled) return;
+    var p = plan.plan, g = this.rig().cal.air, i0, iEnd = Math.min(p.env.length - 1, Math.floor((until - p.from) * p.rate));
+    if (A.scheduledUntil < 0) {
+      // the first point: hold at the start, which is the plan's own start or, entered late, a 300 ms ramp into it
+      i0 = Math.max(0, Math.ceil((plan.start - p.from) * p.rate));
+      if (i0 > iEnd) return;
+      var t0 = p.from + i0 / p.rate;
+      holdAt(A.swell.gain, plan.start, A.held);
+      holdAt(A.bp.frequency, plan.start, p.band[i0]);
+      if (i0 > 0 && p.env[i0] > 0) {
+        var tIn = Math.min(t0 + 0.3, p.from + (p.env.length - 1) / p.rate);
+        A.swell.gain.linearRampToValueAtTime(arrAt(p.env, p.from, p.rate, tIn) * g, tIn);
+        i0 = Math.ceil((tIn - p.from) * p.rate);
+        this.transitions.push({ t: plan.start, from: 'air', to: 'air', length: tIn - plan.start });
+      }
+      A.scheduledUntil = i0 - 1;
+    }
+    for (i0 = A.scheduledUntil + 1; i0 <= iEnd; i0++) {
+      var t = p.from + i0 / p.rate;
+      A.swell.gain.linearRampToValueAtTime(p.env[i0] * g, t);
+      A.bp.frequency.linearRampToValueAtTime(p.band[i0], t);
+    }
+    if (iEnd > A.scheduledUntil) A.scheduledUntil = iEnd;
+    if (A.scheduledUntil >= p.env.length - 1) { A.idleAt = p.to; A.held = 0; }
+    else A.held = arrAt(p.env, p.from, p.rate, until) * g;
+  };
+  Conductor.prototype.cancelAir = function (plan, tc, fade) {
+    if (plan.cancelled) return;
+    var T = this.rig(), A = airChain(T, plan.surface), p = plan.plan, g = T.cal.air;
+    var v0 = tc < plan.start ? 0 : arrAt(p.env, p.from, p.rate, tc) * g, f = Math.max(fade, 0.3);
+    plan.cancelled = true; plan.to = tc + f;
+    holdAt(A.swell.gain, tc, v0); A.swell.gain.linearRampToValueAtTime(0, tc + f);
+    if (v0 > 0) this.transitions.push({ t: tc, from: 'air', to: 'silence', length: f });
+    A.plan = null; A.held = 0; A.idleAt = tc + f;
+  };
+
+  /* ---- stops ---- */
+  Conductor.prototype.cancel = function (id, fadeMs) {
+    var plan = null, i;
+    for (i = 0; i < this.plans.length; i++) if (this.plans[i].id === id) plan = this.plans[i];
+    if (!plan || plan.cancelled) return false;
+    var tc = this.now() + STOP_LEAD, fade = clamp(fadeMs == null ? 120 : +fadeMs, 12, 1000) / 1000;
+    if (plan.lane === 'pen') {
+      var S = this.surf(plan.surface), drop = {};
+      for (i = 0; i < plan.orders.length; i++) drop[plan.orders[i]] = 1;
+      S.strokes = S.strokes.filter(function (s) { return !drop[s.order]; });
+      plan.cancelled = true; plan.to = tc + fade;
+      this.replanPen(plan.surface, tc, fade);
+    } else if (plan.lane === 'typing') this.cancelTyping(plan, tc, fade);
+    else this.cancelAir(plan, tc, fade);
+    this.replanLanes(tc);
+    return true;
+  };
+  Conductor.prototype.stopAll = function (fadeMs, reason) {
+    var pol = FADE_POLICY[reason], ms = clamp(fadeMs == null ? 120 : +fadeMs, 80, 1000) / 1000;
+    var len = pol || { pen: ms, typing: Math.min(ms, 0.12), air: Math.max(ms, 0.3) };
+    var tc = this.now() + STOP_LEAD, name, i;
+    for (name in this.surfaces) {
+      var S = this.surfaces[name], ch = this.T && this.T.chains[name];
+      S.strokes = []; S.penPlan = null;
+      if (ch && ch.pen) {
+        var P = ch.pen, v = P.plan ? arrAt(P.plan.L, P.plan.t0, P.plan.rate, tc) * this.penScale(name) : 0;
+        P.plan = null; P.scheduledUntil = -1;
+        holdAt(P.pressure.gain, tc, v); P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen);
+        P.idleAt = tc + len.pen;
+      }
+      if (S.airPlan && !S.airPlan.cancelled) this.cancelAir(S.airPlan, tc, len.air);
+      S.airPlan = null;
+    }
+    for (i = 0; i < this.plans.length; i++) {
+      var p = this.plans[i];
+      if (p.cancelled) continue;
+      if (p.lane === 'typing') this.cancelTyping(p, tc, len.typing);
+      else { p.cancelled = true; p.to = Math.min(p.to, tc + (p.lane === 'pen' ? len.pen : len.air)); }
+    }
+    this.fadeLane('pen', tc, len.pen); this.fadeLane('typing', tc, len.typing); this.fadeLane('air', tc, len.air);
+    this.transitions = this.transitions.filter(function (x) { return x.to === 'silence' || x.t + x.length > tc; });
+    if (reason === 'reduced') this.refused = true;
+    if (reason === 'mute' || reason === 'hidden') this.muted = true;
+    this.arm();
+  };
+  Conductor.prototype.musicChanged = function () {
+    if (this.T) this.replanLanes(this.now() + LEAD);
+  };
+  // after an unmute or a return to the tab nothing resumes; the next report plays
+  Conductor.prototype.resume = function () { this.muted = false; };
+  Conductor.prototype.reduced = function (on) { if (on) this.stopAll(200, 'reduced'); else this.refused = false; };
+
+  /* ---- scheduling ---- */
+  // emit everything that falls before `until`: the tick does this every 25 ms live, the offline render once
+  Conductor.prototype.emit = function (until) {
+    if (!this.T) return;
+    var name, i;
+    for (name in this.T.chains) {
+      var ch = this.T.chains[name];
+      if (ch.pen && ch.pen.plan) this.emitPen(ch.pen, until);
+      if (ch.air && ch.air.plan) this.emitAir(ch.air, until);
+    }
+    for (i = 0; i < this.plans.length; i++) if (this.plans[i].lane === 'typing' && !this.plans[i].cancelled) this.emitTyping(this.plans[i], until);
+  };
+  Conductor.prototype.busy = function (now) {
+    var i, name;
+    for (i = 0; i < this.plans.length; i++) if (this.plans[i].to + 0.5 > now) return true;
+    for (name in LANE_NAMES) if (this.lanes[LANE_NAMES[name]].until > now) return true;
+    if (this.T) for (name in this.T.chains) { var ch = this.T.chains[name]; if ((ch.pen && ch.pen.running) || (ch.air && ch.air.running)) return true; }
+    return false;
+  };
+  Conductor.prototype.tick = function () {
+    var now = this.now(), T = this.T, name, i;
+    this.emit(now + HORIZON);
+    if (T) {
+      for (name in T.chains) {
+        var ch = T.chains[name];
+        if (ch.pen && ch.pen.running && ch.pen.idleAt >= 0 && now > ch.pen.idleAt + IDLE_STOP) penStop(ch.pen, now + 0.01);
+        if (ch.air && ch.air.running && ch.air.idleAt >= 0 && now > ch.air.idleAt + IDLE_STOP) airStop(ch.air, now + 0.01);
+      }
+      // free the per-tap gains of taps that have ended
+      for (i = 0; i < this.plans.length; i++) {
+        var p = this.plans[i];
+        if (p.lane !== 'typing' || !p.gains.length) continue;
+        p.gains = p.gains.filter(function (x) { if (x.until + 0.2 < now) { try { x.g.disconnect(); } catch (e) { /* gone */ } return false; } return true; });
+      }
+    }
+    this.plans = this.plans.filter(function (p) { return p.to + 1 > now; });
+    if (!this.busy(now)) { clearInterval(this.timer); this.timer = 0; }
+  };
+  Conductor.prototype.arm = function () {
+    if (this.offline) { this.emit(Infinity); return; }
+    if (this.timer) return;
+    var self = this;
+    this.tick();
+    if (this.busy(this.now())) this.timer = setInterval(function () { if (self.ctx.state === 'running') self.tick(); }, TICK_MS);
+  };
+
+  /* ---- a query for tests and dev pages ---- */
+  Conductor.prototype.state = function () {
+    var now = this.now(), out = { surface: this.surface, lanes: {}, duck: { depth: this.T ? duckAt(this.T, now) : 1, until: this.T && this.T.duckState ? this.T.duckState.until : -1 },
+      plans: [], transitions: this.transitions.slice(), pool: { used: 0, size: TEX_POOL } }, i;
+    for (i = 0; i < LANE_NAMES.length; i++) {
+      var name = LANE_NAMES[i], lane = this.lanes[name], g = this.laneAt(name, now), st = 'idle', from = Infinity, to = -Infinity, taps = 0, voices = 0;
+      for (var k = 0; k < this.plans.length; k++) {
+        var p = this.plans[k];
+        if (p.lane !== name || p.cancelled) continue;
+        from = Math.min(from, p.from); to = Math.max(to, p.to);
+        if (name === 'typing') taps += p.taps.length;
+      }
+      if (lane.fadeUntil > now) st = 'fading';
+      else if (from <= now && to > now) st = 'active';
+      else if (from > now && from <= now + HORIZON) st = 'scheduled';
+      if (this.T && this.surface && this.T.chains[this.surface]) {
+        var ch = this.T.chains[this.surface];
+        if (name === 'pen' && ch.pen && ch.pen.running) voices = 1;
+        if (name === 'air' && ch.air && ch.air.running) voices = 1;
+      }
+      out.lanes[name] = { gain: g, state: st, until: lane.until, voices: voices };
+      if (name === 'typing') out.lanes[name].taps = taps;
+    }
+    for (i = 0; i < this.plans.length; i++) out.plans.push({ id: this.plans[i].id, lane: this.plans[i].lane, from: this.plans[i].from, to: this.plans[i].to, cancelled: !!this.plans[i].cancelled });
+    if (this.T) for (i = 0; i < this.T.sink.free.length; i++) if (this.T.sink.free[i] > now) out.pool.used++;
+    return out;
+  };
 
   /* ------------------------------------------------------------------ *
    * 4. Musical voices
@@ -2350,7 +2849,7 @@
    * ------------------------------------------------------------------ */
   var state = {
     on: false, ctx: null, R: null, music: null, want: null, section: null,
-    userEnabled: false, sleeping: false, armed: false, timer: 0, hideTimer: 0, ready: false
+    userEnabled: false, sleeping: false, armed: false, timer: 0, hideTimer: 0, ready: false, conductor: null
   };
   var UNLOCK_EVENTS = ['pointerdown', 'pointerup', 'touchend', 'click', 'keydown'];
 
@@ -2435,6 +2934,7 @@
     state.on = true; state.userEnabled = true; state.sleeping = false;
     if (!was) writePref(true);
     var ctx = ensureContext();
+    if (state.conductor) state.conductor.resume();
     refreshToggles(); announce();
     if (!ctx) return Promise.resolve(false);
     if (ctx.state !== 'running') armUnlock();
@@ -2447,6 +2947,7 @@
     stopMusicNow(0.3);
     var R = state.R, ctx = state.ctx;
     if (R) {
+      if (state.conductor) state.conductor.stopAll(120, 'mute');
       masterTo(R, 0, 0.25);
       setTimeout(function () { if (!state.on && ctx.state === 'running') { try { ctx.suspend(); } catch (e) { /* ignore */ } } }, 350);
     }
@@ -2473,6 +2974,35 @@
     return trigger(R, name, R.ctx.currentTime + 0.005, opts);
   }
 
+  /* Textures. The same gates as play(), plus reduced motion and a hidden tab: a report
+     that fails one returns 0 and is not queued. The conductor lives on the live rig and
+     varies from the deck's seed, never from the clock. */
+  function texGate() {
+    return !!(state.on && state.R && state.ctx && state.ctx.state === 'running' && !state.sleeping && !reducedMotion() && !(doc && doc.hidden));
+  }
+  function texLive() {
+    if (!state.conductor) {
+      state.conductor = new Conductor(state.R, { seed: deckSeed(), cal: SketchySound.texture.cal, music: function () { return !!state.music; } });
+    }
+    return state.conductor;
+  }
+  var textureLive = {
+    pen: function (timeline) { return texGate() ? texLive().pen(timeline) : 0; },
+    typing: function (spec) { return texGate() ? texLive().typing(spec) : 0; },
+    air: function (spec) { return texGate() ? texLive().air(spec) : 0; },
+    cancel: function (id, fadeMs) { return state.conductor ? state.conductor.cancel(id, fadeMs) : false; },
+    stopAll: function (fadeMs, reason) { if (state.conductor) state.conductor.stopAll(fadeMs, reason); },
+    state: function () {
+      if (state.conductor) return state.conductor.state();
+      var idle = { gain: 0, state: 'idle', until: -1, voices: 0 };
+      return { surface: null, lanes: { pen: idle, typing: { gain: 0, state: 'idle', until: -1, voices: 0, taps: 0 }, air: idle },
+        duck: { depth: 1, until: -1 }, plans: [], transitions: [], pool: { used: 0, size: TEX_POOL } };
+    }
+  };
+  function onReducedMotion(e) {
+    if (state.conductor) state.conductor.reduced(!!(e && e.matches));
+  }
+
   /* Music */
   function startMusicNow(want) {
     var R = state.R, ctx = state.ctx;
@@ -2486,12 +3016,14 @@
       m.schedule(ctx.currentTime + 0.12);
     }, 25);
     m.timer = state.timer;
+    if (state.conductor) state.conductor.musicChanged();   // the pad is the bed now: air yields
   }
 
   function stopMusicNow(fadeOut) {
     var m = state.music;
     if (!m) return;
     state.music = null;
+    if (state.conductor) state.conductor.musicChanged();
     if (m.timer) clearInterval(m.timer);
     var ctx = state.ctx, now = ctx.currentTime, len = Math.max(0.05, fadeOut);
     for (var i = 0; i < 3; i++) {
@@ -2543,6 +3075,7 @@
     var R = state.R, ctx = state.ctx;
     if (!R || !state.on) return;
     if (doc.hidden) {
+      if (state.conductor) state.conductor.stopAll(120, 'hidden');
       masterTo(R, 0, 0.15);
       clearTimeout(state.hideTimer);
       state.hideTimer = setTimeout(function () {
@@ -2554,6 +3087,7 @@
         state.sleeping = false;
         resumeContext();
       }
+      if (state.conductor) state.conductor.resume();
       if (ctx.state === 'running') masterTo(R, MASTER, 1.2);
     }
   }
@@ -2614,6 +3148,12 @@
       toggle();
     });
     doc.addEventListener('visibilitychange', onVisibility);
+    // reduced motion turning on fades every texture out; reports are refused while it stays on
+    try {
+      var mq = global.matchMedia && global.matchMedia('(prefers-reduced-motion: reduce)');
+      if (mq && mq.addEventListener) mq.addEventListener('change', onReducedMotion);
+      else if (mq && mq.addListener) mq.addListener(onReducedMotion);
+    } catch (e) { /* no matchMedia */ }
     declaredMusic();
     var pref = readPref();
     if (pref === 'on') { state.on = true; armUnlock(); }
@@ -2651,6 +3191,12 @@
     /* Textures: a pen that follows the line, key taps under typed text, paper air.
        texture.plan.* are pure planners that node can run; see references/sound.md */
     texture: {
+      /* pen(timeline), typing(spec), air(spec) return a plan id, or 0 when sound is off, the
+         context is not running, motion is reduced, the tab is hidden or the plan is all past */
+      pen: textureLive.pen, typing: textureLive.typing, air: textureLive.air,
+      cancel: textureLive.cancel,     // one plan, default fade 120 ms
+      stopAll: textureLive.stopAll,   // every lane; reason: 'step'|'replay'|'close'|'mute'|'hidden'|'reduced'
+      state: textureLive.state,       // the conductor's lanes, duck, plans, transitions and pool
       plan: texturePlan,
       /* the level trims the rig reads (dev/check-textures.mjs --calibrate adjusts them, then they are frozen in source) */
       cal: { pen: PEN_CAL, typing: TYPE_CAL, air: AIR_CAL, kind: TAP_TRIM },
