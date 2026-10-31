@@ -438,7 +438,9 @@ async function analyse({ R, policy, nodePlans, wav, calibrate, typingFixtures, s
     const idA = idAt(fx.typing[0].at), idB = idAt(fx.typing[1].at), rowB = rowOf(idB);
     push('F16 typing: the first line is planned and stopped before it taps', idA > 0 && !!rowOf(idA) && rowOf(idA).cancelled);
     push('F16 typing: a line reported 50 ms after the stop is planned (an id, not 0)', idB > 0, `id ${idB}`);
-    const first = rowB && rowB.taps.length ? rowB.taps[0].t : Infinity, wanted = fx.typing[1].at + typingFixtures.hello.startAfter / 1000;
+    // its own start is t1: the first character shows one interval after startAfter (spec 4.2)
+    const hello = typingFixtures.hello, first = rowB && rowB.taps.length ? rowB.taps[0].t : Infinity;
+    const wanted = fx.typing[1].at + hello.startAfter / 1000 + 1 / hello.charsPerSecond;
     push('F16 typing: it taps at once, from its own start (within 20 ms) and with the keys it has', !!rowB && rowB.taps.length >= 3 && Math.abs(first - wanted) <= 0.02, rowB ? `${rowB.taps.length} taps, first ${ms2(first)} ms, wanted ${ms2(wanted)} ms` : 'no plan');
     const live = r.plan.plans.filter((p) => p.lane === 'typing' && !p.cancelled).flatMap((p) => p.taps.map((x) => x.t)).sort((a, b) => a - b);
     let minGap = Infinity;
