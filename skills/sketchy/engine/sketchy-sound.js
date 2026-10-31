@@ -960,6 +960,7 @@
   var LEAD = 0.03;            // earliest time a new or changed plan touches a param
   var STOP_LEAD = 0.01;       // a stop fade starts this soon after its event
   var IDLE_STOP = 1.5;        // a chain at gain 0 with no plan stops its source after this
+  var CLOSE_STOP = 0.05;      // a chain closed with its surface stops this long after its fade, then its nodes are freed
   var MAX_STROKES = 64;       // strokes kept per surface; the oldest finished ones drop first
   var MIN_RAMP = 0.012;       // no gain change on a running texture is faster than this
   var TAP_GAP = 0.055;        // two taps never start closer than this
@@ -1494,6 +1495,13 @@
     if (P.lfo) { try { P.lfo.stop(t); } catch (e2) { /* stopped */ } }
     P.src = null; P.lfo = null; P.running = false; P.scheduledUntil = -1;
   }
+  function disconnectAll(nodes) {
+    for (var i = 0; i < nodes.length; i++) {
+      try { if (nodes[i]) nodes[i].disconnect(); } catch (e) { /* already gone */ }
+    }
+  }
+  // takes a stopped pen chain apart; the next report builds a new one
+  function penFree(P) { disconnectAll([P.hp, P.bp, P.am, P.ld, P.pressure, P.lp, P.pan]); }
 
   /* The air voice, one chain per surface:
      pink noise -> highpass 160 -> bandpass f(t) Q 0.6 -> lowpass 2600 -> breath AM
@@ -1542,6 +1550,8 @@
     for (var i = 0; i < A.lfos.length; i++) { try { A.lfos[i].stop(t); } catch (e2) { /* stopped */ } }
     A.src = null; A.lfos = []; A.running = false; A.scheduledUntil = -1;
   }
+  // takes a stopped air chain apart; the next report builds a new one
+  function airFree(A) { disconnectAll([A.hp, A.bp, A.lp, A.am, A.breath, A.swell, A.pan, A.panDepth]); }
 
   /* Key taps: one-shots through the texture sink. Every layer is an envelope like the
      cues': transient [band Hz, Q, decay, peak], bottom [lowpass Hz, offset, decay, peak],
@@ -1674,7 +1684,7 @@
     for (var i = 0; i < LANE_NAMES.length; i++) this.lanes[LANE_NAMES[i]] = { name: LANE_NAMES[i], curve: [], fadeUntil: -1, until: -1 };
     this.transitions = [];
     this.lastTap = -Infinity;
-    this.refused = false; this.muted = false;
+    this.refused = false; this.muted = false; this.hidden = false;
     this.timer = 0;
   }
   Conductor.prototype.now = function () { return this.clock ? this.clock() : this.ctx.currentTime; };
@@ -1686,14 +1696,18 @@
     return this.T;
   };
   /* Host timelines carry `since`, the page's performance clock at their t = 0, in ms. The output
-     timestamp maps it onto the context clock; without one the report counts as now.
+     timestamp maps it onto the context clock; without one the report counts as now. A timestamp
+     of zeros (Chromium hands one out before the first output block) counts as none, because it
+     would put `since` minutes away.
      Offline, `since` is in render seconds and defaults to the time of the report. */
   Conductor.prototype.hostTime = function (since) {
     if (since == null) return this.now();
     if (this.offline) return +since;
     var ts = null;
     try { ts = this.ctx.getOutputTimestamp ? this.ctx.getOutputTimestamp() : null; } catch (e) { ts = null; }
-    if (ts && ts.performanceTime != null && ts.contextTime != null) return ts.contextTime + (+since - ts.performanceTime) / 1000;
+    if (ts && ts.performanceTime != null && ts.contextTime != null && ts.performanceTime > 0 && ts.contextTime > 0) {
+      return ts.contextTime + (+since - ts.performanceTime) / 1000;
+    }
     return this.now();
   };
   Conductor.prototype.surf = function (name) {
@@ -1852,7 +1866,7 @@
   };
   Conductor.prototype.pen = function (timeline) {
     timeline = timeline || {};
-    if (this.refused || this.muted) return 0;
+    if (this.refused || this.muted || this.hidden) return 0;
     var surface = timeline.surface || 'deck', now = this.now(), tc = now + LEAD;
     if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
     this.surface = surface;
@@ -1882,7 +1896,7 @@
   /* ---- typing ---- */
   Conductor.prototype.typing = function (spec) {
     spec = spec || {};
-    if (this.refused || this.muted) return 0;
+    if (this.refused || this.muted || this.hidden) return 0;
     var surface = spec.surface || 'deck', now = this.now(), tc = now + LEAD;
     if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
     this.surface = surface;
@@ -1942,7 +1956,7 @@
   /* ---- air ---- */
   Conductor.prototype.air = function (spec) {
     spec = spec || {};
-    if (this.refused || this.muted) return 0;
+    if (this.refused || this.muted || this.hidden) return 0;
     var surface = spec.surface || 'deck', now = this.now(), tc = now + LEAD;
     if (this.surface && this.surface !== surface) this.stopAll(FADE_POLICY.surface.pen * 1000, 'surface');
     this.surface = surface;
@@ -1957,7 +1971,7 @@
     var plan = { id: this.nextId++, lane: 'air', surface: surface, from: p.from, to: p.to, plan: p, start: start, next: -1 };
     this.plans.push(plan); this.ids.push(plan.id); S.airPlan = plan; A.plan = plan;
     airStart(T, A, Math.max(now + 0.005, start - 0.05), this.rnd);
-    A.scheduledUntil = -1; A.idleAt = -1;
+    A.scheduledUntil = -1; A.idleAt = -1; A.closing = false;
     this.replanLanes(tc);
     this.arm();
     return plan.id;
@@ -2021,7 +2035,12 @@
     this.replanLanes(tc);
     return true;
   };
-  Conductor.prototype.stopAll = function (fadeMs, reason) {
+  /* Every lane to silence by the policy of the reason; without one, `fadeMs` for the pen, at most 120 ms
+     for typing, at least 300 ms for the air. With a `surface`, only when that surface is the one
+     playing: a surface leaving the screen never fades another's textures. A second stop finds every
+     voice on its way down and lets it go on from there, never from zero. */
+  Conductor.prototype.stopAll = function (fadeMs, reason, surface) {
+    if (surface && this.surface !== surface) return;
     var pol = FADE_POLICY[reason], ms = clamp(fadeMs == null ? 120 : +fadeMs, 80, 1000) / 1000;
     var len = pol || { pen: ms, typing: Math.min(ms, 0.12), air: Math.max(ms, 0.3) };
     var tc = this.now() + STOP_LEAD, name, i;
@@ -2037,9 +2056,11 @@
         P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen);
         P.release = [[tc, v], [tc + len.pen, 0]];
         P.idleAt = tc + len.pen;
+        if (reason === 'close') P.closing = true;
       }
       if (S.airPlan && !S.airPlan.cancelled) this.cancelAir(S.airPlan, tc, len.air);
       S.airPlan = null;
+      if (ch && ch.air && reason === 'close') ch.air.closing = true;
     }
     for (i = 0; i < this.plans.length; i++) {
       var p = this.plans[i];
@@ -2050,14 +2071,19 @@
     this.fadeLane('pen', tc, len.pen); this.fadeLane('typing', tc, len.typing); this.fadeLane('air', tc, len.air);
     this.transitions = this.transitions.filter(function (x) { return x.to === 'silence' || x.t + x.length > tc; });
     if (reason === 'reduced') this.refused = true;
-    if (reason === 'mute' || reason === 'hidden') this.muted = true;
+    if (reason === 'mute') this.muted = true;
+    if (reason === 'hidden') this.hidden = true;
     this.arm();
   };
   Conductor.prototype.musicChanged = function () {
     if (this.T) this.replanLanes(this.now() + LEAD);
   };
-  // after an unmute or a return to the tab nothing resumes; the next report plays
-  Conductor.prototype.resume = function () { this.muted = false; };
+  /* After an unmute or a return to the tab nothing resumes; the next report plays. Each gate lifts on
+     its own: coming back to the tab ('hidden') leaves a mute in place. */
+  Conductor.prototype.resume = function (reason) {
+    if (reason === 'hidden') this.hidden = false;
+    else this.muted = false;
+  };
   Conductor.prototype.reduced = function (on) { if (on) this.stopAll(200, 'reduced'); else this.refused = false; };
 
   /* ---- scheduling ---- */
@@ -2076,7 +2102,8 @@
     var i, name;
     for (i = 0; i < this.plans.length; i++) if (this.plans[i].to + 0.5 > now) return true;
     for (name in LANE_NAMES) if (this.lanes[LANE_NAMES[name]].until > now) return true;
-    if (this.T) for (name in this.T.chains) { var ch = this.T.chains[name]; if ((ch.pen && ch.pen.running) || (ch.air && ch.air.running)) return true; }
+    // a closed chain keeps the timer until it has been freed
+    if (this.T) for (name in this.T.chains) { var ch = this.T.chains[name]; if ((ch.pen && (ch.pen.running || ch.pen.closing)) || (ch.air && (ch.air.running || ch.air.closing))) return true; }
     return false;
   };
   Conductor.prototype.tick = function () {
@@ -2085,8 +2112,11 @@
     if (T) {
       for (name in T.chains) {
         var ch = T.chains[name];
-        if (ch.pen && ch.pen.running && ch.pen.idleAt >= 0 && now > ch.pen.idleAt + IDLE_STOP) penStop(ch.pen, now + 0.01);
-        if (ch.air && ch.air.running && ch.air.idleAt >= 0 && now > ch.air.idleAt + IDLE_STOP) airStop(ch.air, now + 0.01);
+        // a closed chain is freed one tick after it stopped, so its last block plays out at gain 0
+        if (ch.pen && ch.pen.closing && !ch.pen.running) { penFree(ch.pen); ch.pen = null; }
+        if (ch.air && ch.air.closing && !ch.air.running) { airFree(ch.air); ch.air = null; }
+        if (ch.pen && ch.pen.running && ch.pen.idleAt >= 0 && now > ch.pen.idleAt + (ch.pen.closing ? CLOSE_STOP : IDLE_STOP)) penStop(ch.pen, now + 0.01);
+        if (ch.air && ch.air.running && ch.air.idleAt >= 0 && now > ch.air.idleAt + (ch.air.closing ? CLOSE_STOP : IDLE_STOP)) airStop(ch.air, now + 0.01);
       }
       // free the per-tap gains of taps that have ended
       for (i = 0; i < this.plans.length; i++) {
@@ -3173,7 +3203,7 @@
     typing: function (spec) { return texGate() ? texLive().typing(spec) : 0; },
     air: function (spec) { return texGate() ? texLive().air(spec) : 0; },
     cancel: function (id, fadeMs) { return state.conductor ? state.conductor.cancel(id, fadeMs) : false; },
-    stopAll: function (fadeMs, reason) { if (state.conductor) state.conductor.stopAll(fadeMs, reason); },
+    stopAll: function (fadeMs, reason, surface) { if (state.conductor) state.conductor.stopAll(fadeMs, reason, surface); },
     state: function () {
       if (state.conductor) return state.conductor.state();
       var idle = { gain: 0, state: 'idle', until: -1, voices: 0 };
@@ -3269,7 +3299,7 @@
         state.sleeping = false;
         resumeContext();
       }
-      if (state.conductor) state.conductor.resume();
+      if (state.conductor) state.conductor.resume('hidden');
       if (ctx.state === 'running') masterTo(R, MASTER, 1.2);
     }
   }
@@ -3408,7 +3438,7 @@
          context is not running, motion is reduced, the tab is hidden or the plan is all past */
       pen: textureLive.pen, typing: textureLive.typing, air: textureLive.air,
       cancel: textureLive.cancel,     // one plan, default fade 120 ms
-      stopAll: textureLive.stopAll,   // every lane; reason: 'step'|'replay'|'close'|'mute'|'hidden'|'reduced'
+      stopAll: textureLive.stopAll,   // every lane; reason: 'step'|'replay'|'close'|'mute'|'hidden'|'reduced'; surface: only if it is the one playing
       state: textureLive.state,       // the conductor's lanes, duck, plans, transitions and pool
       plan: texturePlan,
       render: renderTextures,         // deterministic offline render: { mix, stems: { pen, typing, air, cues }, plan }
