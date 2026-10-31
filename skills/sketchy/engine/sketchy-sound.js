@@ -1457,7 +1457,8 @@
     var ch = T.chains[surface] || (T.chains[surface] = { pen: null, air: null });
     if (ch.pen) return ch.pen;
     var ctx = T.ctx;
-    var P = { surface: surface, src: null, lfo: null, running: false, scheduledUntil: -1, plan: null, idleAt: -1, trim: 1, held: 0 };
+    var P = { surface: surface, src: null, lfo: null, running: false, scheduledUntil: -1, plan: null, idleAt: -1, trim: 1, held: 0,
+      release: [], closing: false };
     P.hp = ctx.createBiquadFilter(); P.hp.type = 'highpass'; P.hp.frequency.value = 900; P.hp.Q.value = 0.5;
     P.bp = ctx.createBiquadFilter(); P.bp.type = 'bandpass'; P.bp.frequency.value = 2600; P.bp.Q.value = 1.3;
     P.am = ctx.createGain(); P.am.gain.value = 0.6;
@@ -1737,18 +1738,22 @@
     }
     return { pen: pen, typing: typing, air: air, transitions: trans };
   };
-  // emit a lane's new curve from tc: hold the value there, ramp to the curve if it sits elsewhere, then follow it
+  /* emit a lane's new curve from tc: hold the value there, ramp to the curve if it sits elsewhere, then
+     follow it. A stop still under way finishes first: a lane never rises again before its fade has
+     reached silence. */
   Conductor.prototype.setLane = function (name, tc, curve, fade) {
     var lane = this.lanes[name], v0 = this.laneAt(name, tc), pts = [[tc, v0]], i;
-    var target = curveAt(curve, tc), start = tc;
-    if (Math.abs(target - v0) > 1e-4) {
+    var at = tc, v = v0;
+    if (lane.fadeUntil > tc) { at = lane.fadeUntil; v = 0; pts.push([at, 0]); }
+    var target = curveAt(curve, at), start = at;
+    if (Math.abs(target - v) > 1e-4) {
       var f = Math.max(fade || LANE_FADE[name], MIN_RAMP);
-      start = tc + f;
+      start = at + f;
       pts.push([start, curveAt(curve, start)]);
-      this.transitions.push({ t: tc, from: name, to: 'lane', length: f });
+      this.transitions.push({ t: at, from: name, to: 'lane', length: f });
     }
     for (i = 0; i < curve.length; i++) if (curve[i][0] > start) pts.push(curve[i]);
-    lane.curve = pts; lane.fadeUntil = -1;
+    lane.curve = pts; lane.fadeUntil = at > tc ? at : -1;
     lane.until = pts[pts.length - 1][0];
     if (!lane.gain || (this.solo && this.solo !== name)) return;
     var g = lane.gain.gain;
@@ -1761,10 +1766,10 @@
     for (var i = 0; i < c.transitions.length; i++) this.transitions.push(c.transitions[i]);
     this.setLane('pen', tc, c.pen); this.setLane('typing', tc, c.typing); this.setLane('air', tc, c.air);
   };
-  // a stop: hold the lane where it is and ramp to silence
+  // a stop: hold the lane where it is and ramp to silence. A lane already silent has no fade to wait for.
   Conductor.prototype.fadeLane = function (name, tc, len) {
     var lane = this.lanes[name], v0 = this.laneAt(name, tc);
-    lane.curve = [[tc, v0], [tc + len, 0]]; lane.fadeUntil = tc + len; lane.until = tc + len;
+    lane.curve = [[tc, v0], [tc + len, 0]]; lane.fadeUntil = v0 > 0 ? tc + len : -1; lane.until = tc + len;
     if (v0 > 0) this.transitions.push({ t: tc, from: name, to: 'silence', length: len });
     if (!lane.gain || (this.solo && this.solo !== name)) return;
     holdAt(lane.gain.gain, tc, v0);
@@ -1773,20 +1778,27 @@
 
   /* ---- pen ---- */
   Conductor.prototype.penScale = function (surface) { return this.rig().cal.pen * fromDb(SURFACE_TRIM[surface] || 0); };
+  // the pressure gain the model has at t: the plan's L, or the let-go of a voice that was stopped
+  Conductor.prototype.penPressureAt = function (P, t) {
+    if (P.plan) return arrAt(P.plan.L, P.plan.t0, P.plan.rate, t) * this.penScale(P.surface);
+    return curveAt(P.release, t);
+  };
   Conductor.prototype.replanPen = function (surface, tc, blend) {
-    var S = this.surf(surface), T = this.rig(), P = penChain(T, surface), old = S.penPlan, i;
+    var S = this.surf(surface), T = this.rig(), P = penChain(T, surface), old = S.penPlan, g = this.penScale(surface), i;
     S.strokes = S.strokes.filter(function (s) { return s.start + s.duration + 0.5 > tc; });
     if (S.strokes.length > MAX_STROKES) { S.strokes.sort(function (a, b) { return a.start - b.start; }); S.strokes = S.strokes.slice(S.strokes.length - MAX_STROKES); }
     var init = old ? { L: arrAt(old.L, old.t0, old.rate, tc), pan: arrAt(old.pan, old.t0, old.paramRate, tc),
       sigma: (arrAt(old.fc, old.t0, old.paramRate, tc) / Math.max(1e-6, arrAt(old.band, old.t0, old.paramRate, tc)) - 1900) / 1500,
       m: arrAt(old.band, old.t0, old.paramRate, tc) } : null;
+    // without a plan the voice may still be letting go after a stop: the new plan continues from there
+    var held = old ? 0 : curveAt(P.release, tc);
     var plan = planPen({ strokes: S.strokes, surface: surface, key: S.key }, { seed: this.seed, from: tc, init: init });
-    if (old && blend > 0 && plan.n) {
-      var nb = Math.max(1, Math.round(blend * plan.rate));
+    if (plan.n && blend > 0 && (old || held > 0)) {
+      var nb = Math.max(1, Math.round((old ? blend : Math.max(blend, 0.08)) * plan.rate));
       for (i = 0; i <= nb && i < plan.n; i++) {
         var u = i / nb, t = tc + i / plan.rate;
-        plan.L[i] = arrAt(old.L, old.t0, old.rate, t) * (1 - u) + plan.L[i] * u;
-        if (i % 2 === 0) {
+        plan.L[i] = (old ? arrAt(old.L, old.t0, old.rate, t) : curveAt(P.release, t) / g) * (1 - u) + plan.L[i] * u;
+        if (old && i % 2 === 0) {
           var j = i >> 1;
           plan.fc[j] = arrAt(old.fc, old.t0, old.paramRate, t) * (1 - u) + plan.fc[j] * u;
           plan.q[j] = arrAt(old.q, old.t0, old.paramRate, t) * (1 - u) + plan.q[j] * u;
@@ -1797,18 +1809,19 @@
         }
       }
     }
-    S.penPlan = plan; P.plan = plan; P.scheduledUntil = 0; P.idleAt = -1;
+    S.penPlan = plan; P.plan = plan; P.scheduledUntil = 0; P.idleAt = -1; P.release = []; P.closing = false;
     if (!plan.n) {
       // nothing left to draw: hold where the voice is and let it go
-      var cur = init ? init.L * this.penScale(surface) : 0, f = Math.max(blend || 0, 0.08);
+      var cur = init ? init.L * g : held, f = Math.max(blend || 0, 0.08);
       P.plan = null; S.penPlan = null; P.scheduledUntil = -1;
       holdAt(P.pressure.gain, tc, cur);
+      P.release = [[tc, cur], [tc + f, 0]];
       if (cur > 0) { P.pressure.gain.linearRampToValueAtTime(0, tc + f); this.transitions.push({ t: tc, from: 'pen', to: 'silence', length: f }); }
       P.idleAt = tc + f;
       return;
     }
     penStart(T, P, Math.max(this.now() + 0.005, tc - 0.05), this.rnd);
-    this.penHold(P, tc, plan.L[0] * this.penScale(surface), plan);
+    this.penHold(P, tc, plan.L[0] * g, plan);
   };
   // hold every pen param at tc (the start of a replan or of a stop)
   Conductor.prototype.penHold = function (P, tc, pressure, plan) {
@@ -1998,11 +2011,13 @@
       var S = this.surfaces[name], ch = this.T && this.T.chains[name];
       S.strokes = []; S.penPlan = null;
       if (ch && ch.pen) {
-        // the lane gain carries the fade alone; the pressure holds under it and lets go once the lane is silent
-        var P = ch.pen, v = P.plan ? arrAt(P.plan.L, P.plan.t0, P.plan.rate, tc) * this.penScale(name) : 0;
+        // the pressure lets go under the lane fade, from wherever the voice is at tc (a voice an earlier stop is
+        // still letting go is found on its release curve, so a second stop never cuts it)
+        var P = ch.pen, v = this.penPressureAt(P, tc);
         P.plan = null; P.scheduledUntil = -1;
         holdAt(P.pressure.gain, tc, v);
-        P.pressure.gain.setValueAtTime(v, tc + len.pen); P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen + 0.05);
+        P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen);
+        P.release = [[tc, v], [tc + len.pen, 0]];
         P.idleAt = tc + len.pen;
       }
       if (S.airPlan && !S.airPlan.cancelled) this.cancelAir(S.airPlan, tc, len.air);
