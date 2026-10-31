@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // check-textures.mjs: hold the texture layer of engine/sketchy-sound.js (pen, typing, air)
 // to its contract. The plan-level checks (F5, F12) run in node on the pure planners; the
-// audio checks (F1 to F4, F6 to F11, F13, F14) render fixtures offline in headless Chromium
+// audio checks (F1 to F4, F6 to F11, F13 to F17) render fixtures offline in headless Chromium
 // (OfflineAudioContext, the engine's own graph) and measure the stems.
 //
 //   node skills/sketchy/dev/check-textures.mjs [--plans-only] [--calibrate] [--wav <dir>]
@@ -73,6 +73,19 @@ const RENDERS = {
   STOP_B: { name: 'stop (close) under the air', duration: 5, seed: SEED,
     air: [{ at: 0, surface: 'room', in: 0.5, hold: 3, out: 1 }],
     events: [{ t: 2.0, type: 'stop', fadeMs: 250, reason: 'close' }] },
+  // two stops in a row, 50 ms apart, and a pen report on the same surface while the second still fades
+  STOP_TWICE: { name: 'two stops in a row, then a pen report during the fade', duration: 3, seed: SEED,
+    pen: [{ at: 0, surface: 'room', key: 'twice', strokes: [{ start: 0.8, duration: 0.66, shape: 'line', x0: 0.2, x1: 0.8 }, { start: 0.85, duration: 0.66, shape: 'curve', x0: 0.3, x1: 0.7 }] },
+      { at: 0.97, surface: 'room', key: 'again', strokes: [{ start: 0, duration: 0.66, shape: 'line', x0: 0.2, x1: 0.8 }, { start: 0.43, duration: 0.66, shape: 'line', x0: 0.3, x1: 0.7 }] }],
+    events: [{ t: 0.9, type: 'stop', fadeMs: 250, reason: 'close' }, { t: 0.95, type: 'stop', fadeMs: 250, reason: 'close' }] },
+  // a typing line stopped before it taps, then a line reported 50 ms later and another while that one types
+  TYPE_AGAIN: { name: 'a typing line stopped and reported again', duration: 6, seed: SEED,
+    typing: [{ at: 0, surface: 'room', ...SLOW }, { at: 0.55, surface: 'room', ...HELLO }, { at: 1.5, surface: 'room', ...HELLO }],
+    events: [{ t: 0.5, type: 'stop', fadeMs: 120, reason: 'replay' }] },
+  // an air swell stopped, then a new swell reported 20 ms later on the same surface
+  AIR_AFTER_STOP: { name: 'a new air swell right after a stop', duration: 4, seed: SEED,
+    air: [{ at: 0, surface: 'room', in: 0.3, hold: 4, out: 1 }, { at: 1.02, surface: 'room', in: 0.5, hold: 1, out: 0.5 }],
+    events: [{ t: 1.0, type: 'stop', fadeMs: 160, reason: 'step' }] },
   REDUCED: { name: 'reduced motion turns on', duration: 4, seed: SEED,
     pen: [{ at: 0, surface: 'room', key: 'r', strokes: [{ start: 0, duration: 2.5, shape: 'curve' }] }, { at: 2.5, surface: 'room', key: 'after', strokes: [{ start: 0, duration: 0.66, shape: 'line' }] }],
     typing: [{ at: 2.6, surface: 'room', ...SHORT }],
@@ -395,6 +408,54 @@ async function analyse({ R, policy, nodePlans, wav, calibrate, typingFixtures, s
     }
     const after = r.plan.ids.filter((x) => x.t > t);
     push(`F11 ${key}: plans submitted after the event return 0`, after.length > 0 && after.every((x) => x.id === 0), `${after.map((x) => x.lane + ':' + x.id).join(', ')}`);
+  }
+
+  // F15 to F17: a stop, or a report right after one, continues from where the voice is. The envelope
+  // probe makes the stem the gain automation itself, so these are exact statements about the gains.
+  const STOP_LEAD = 0.01, LEAD = 0.03;   // the engine's: a stop fades from its event + 10 ms, a report acts at its event + 30 ms
+  const ms2 = (s) => (s * 1000).toFixed(0);
+  const gainAt = (e, sr, t) => e[Math.min(e.length - 1, Math.round(t * sr))];
+  const gainMin = (e, sr, a, b) => { let m = Infinity; for (let i = Math.round(a * sr); i <= Math.min(e.length - 1, Math.round(b * sr)); i++) m = Math.min(m, e[i]); return m; };
+  const gainMax = (e, sr, a, b) => { let m = 0; for (let i = Math.round(a * sr); i <= Math.min(e.length - 1, Math.round(b * sr)); i++) m = Math.max(m, e[i]); return m; };
+
+  // F15: two stops in a row, then a pen report while the second fade runs
+  {
+    const fx = R.STOP_TWICE, r = await render(fx, { probe: 'envelope' }), e = env(r.stems.pen), sr = r.stems.pen.sampleRate, pk = peak(r.stems.pen).pk;
+    const tc2 = fx.events[1].t + STOP_LEAD, fadeEnd = tc2 + policy.close.pen, report = fx.pen[1].at + LEAD;
+    const before = gainAt(e, sr, tc2), after = gainAt(e, sr, tc2 + 0.03), ratio = after / before;
+    push('F15 two stops: the pen still sounds when the second stop comes', before > 1e-5, `${before.toExponential(2)}`);
+    push('F15 two stops: the second stop carries on from the first, still at least half the level 30 ms later', tc2 + 0.03 < report && ratio >= 0.5, `${ratio.toFixed(2)} of the level at the stop (a cut reads 0)`);
+    const silent = gainMin(e, sr, fadeEnd - 0.01, fadeEnd + 0.01);
+    push('F15 a pen report during the fade: the lane reaches silence at the end of the fade, it is not raised before', silent <= pk * 1e-3, `${db(silent / pk).toFixed(0)} dB re peak at ${fadeEnd.toFixed(2)} s`);
+    const again = gainMax(e, sr, fadeEnd + 0.21, fadeEnd + 0.4);
+    push('F15 a pen report during the fade: the new line sounds once the lane has risen again', again >= pk * 0.02, `${db(again / pk).toFixed(0)} dB re peak`);
+  }
+
+  // F16: a typing line stopped, then reported again, taps at once instead of waiting for the old line's time
+  {
+    const fx = R.TYPE_AGAIN, r = await render(fx), idAt = (at) => ((r.plan.ids.find((x) => x.lane === 'typing' && Math.abs(x.t - at) < 1e-9) || {}).id) | 0;
+    const rowOf = (id) => r.plan.plans.find((p) => p.id === id);
+    const idA = idAt(fx.typing[0].at), idB = idAt(fx.typing[1].at), rowB = rowOf(idB);
+    push('F16 typing: the first line is planned and stopped before it taps', idA > 0 && !!rowOf(idA) && rowOf(idA).cancelled);
+    push('F16 typing: a line reported 50 ms after the stop is planned (an id, not 0)', idB > 0, `id ${idB}`);
+    const first = rowB && rowB.taps.length ? rowB.taps[0].t : Infinity, wanted = fx.typing[1].at + typingFixtures.hello.startAfter / 1000;
+    push('F16 typing: it taps at once, from its own start (within 20 ms) and with the keys it has', !!rowB && rowB.taps.length >= 3 && Math.abs(first - wanted) <= 0.02, rowB ? `${rowB.taps.length} taps, first ${ms2(first)} ms, wanted ${ms2(wanted)} ms` : 'no plan');
+    const live = r.plan.plans.filter((p) => p.lane === 'typing' && !p.cancelled).flatMap((p) => p.taps.map((x) => x.t)).sort((a, b) => a - b);
+    let minGap = Infinity;
+    for (let i = 1; i < live.length; i++) minGap = Math.min(minGap, live[i] - live[i - 1]);
+    push('F16 typing: two lines alive at once still keep their taps 55 ms apart', live.length < 2 || minGap >= 0.055 - 1e-9, `${live.length} taps, min gap ${ms2(minGap)} ms`);
+  }
+
+  // F17: a new air swell right after a stop starts after the stop's fade, and the old one is not cut
+  {
+    const fx = R.AIR_AFTER_STOP, r = await render(fx, { probe: 'envelope' }), e = env(r.stems.air), sr = r.stems.air.sampleRate, pk = peak(r.stems.air).pk;
+    const tc = fx.events[0].t + STOP_LEAD, fadeEnd = tc + policy.step.air;
+    const ratio = gainAt(e, sr, fx.events[0].t + 0.12) / gainAt(e, sr, fx.events[0].t);
+    push('F17 air: after a stop and a report, the old swell keeps fading 120 ms in (at least 20 % of its level, a cut reads 0)', ratio >= 0.2, `${ratio.toFixed(2)}`);
+    const silent = gainMin(e, sr, fadeEnd - 0.01, fadeEnd + 0.01);
+    push('F17 air: the fade reaches silence before the new swell begins', silent <= pk * 1e-3, `${db(silent / pk).toFixed(0)} dB re peak at ${fadeEnd.toFixed(2)} s`);
+    const again = gainMax(e, sr, 1.8, 2.5);
+    push('F17 air: the new swell sounds afterwards', again >= pk * 0.3, `${db(again / pk).toFixed(0)} dB re peak`);
   }
 
   // F13 cues untouched: the cue stem is bit-identical with and without textures
