@@ -966,7 +966,9 @@
   var ACCENT_GAP = 0.07;      // two pen accents never start closer than this; the first wins
   var PEN_NOISE_SEED = 13, AIR_NOISE_SEED = 99;
   /* Level trims at the texture input, before SFX_LEVEL. Starting values: the check script's
-     --calibrate mode bisects them against TEX_TARGETS and prints the values to freeze here. */
+     --calibrate mode bisects them against TEX_TARGETS (the loudest of several seeds, since the
+     noise segment a seed picks moves the level by a fraction of a dB) and prints the values to
+     freeze here. */
   var PEN_CAL = 0.1, TYPE_CAL = 0.15, AIR_CAL = 0.02;
   // typing tap kinds in dB, relative to a letter
   var TAP_TRIM = { letter: 0, space: 1, punctuation: -3, 'return': 1.5, settle: -2 };
@@ -1301,7 +1303,8 @@
     var draws = {};
     function draw(idx) {
       if (draws[idx]) return draws[idx];
-      var r = mulberry(hash(tapBase + idx)), d = { lvl: r() * 3 - 1.5, f1: (r() - 0.5) * 2, f2: (r() - 0.5) * 2, jit: r() * 0.008, off: r() };
+      // the level varies downward only (0 to -1.5 dB), so the nominal tap is the loudest one and the margin holds
+      var r = mulberry(hash(tapBase + idx)), d = { lvl: -r() * 1.5, f1: (r() - 0.5) * 2, f2: (r() - 0.5) * 2, jit: r() * 0.008, off: r() };
       if (!vary) d = { lvl: 0, f1: 0, f2: 0, jit: 0, off: 0.5 };
       draws[idx] = d;
       return d;
@@ -1372,7 +1375,7 @@
         pan: kind === 'space' ? 0 : -0.08 + 0.16 * kp.idx / N, f1: d.f1, f2: d.f2, offset: d.off });
     }
     if (out.end !== 'none') {
-      var re = mulberry(hash(tapBase + 'end')), elvl = vary ? re() * 3 - 1.5 : 0, ef1 = vary ? (re() - 0.5) * 2 : 0, ef2 = vary ? (re() - 0.5) * 2 : 0, eoff = vary ? re() : 0.5;
+      var re = mulberry(hash(tapBase + 'end')), elvl = vary ? -re() * 1.5 : 0, ef1 = vary ? (re() - 0.5) * 2 : 0, ef2 = vary ? (re() - 0.5) * 2 : 0, eoff = vary ? re() : 0.5;
       taps.push({ t: tN + 0.11, index: N, kind: out.end, char: '', initial: false, gain: fromDb(TAP_TRIM[out.end] + elvl), pan: 0, f1: ef1, f2: ef2, offset: eoff });
     }
     out.taps = taps;
@@ -1993,9 +1996,11 @@
       var S = this.surfaces[name], ch = this.T && this.T.chains[name];
       S.strokes = []; S.penPlan = null;
       if (ch && ch.pen) {
+        // the lane gain carries the fade alone; the pressure holds under it and lets go once the lane is silent
         var P = ch.pen, v = P.plan ? arrAt(P.plan.L, P.plan.t0, P.plan.rate, tc) * this.penScale(name) : 0;
         P.plan = null; P.scheduledUntil = -1;
-        holdAt(P.pressure.gain, tc, v); P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen);
+        holdAt(P.pressure.gain, tc, v);
+        P.pressure.gain.setValueAtTime(v, tc + len.pen); P.pressure.gain.linearRampToValueAtTime(0, tc + len.pen + 0.05);
         P.idleAt = tc + len.pen;
       }
       if (S.airPlan && !S.airPlan.cancelled) this.cancelAir(S.airPlan, tc, len.air);
@@ -2826,6 +2831,148 @@
     });
   }
 
+  /* texture.render(o): a deterministic offline render of textures with cues and, with a
+     mood, the music. Like renderCue it builds the split master, lifts the bus to stereo as
+     the speakers do, convolves the reverb send in JavaScript and, with master: true, runs the
+     result through the live master chain. Reports and events are applied at their render
+     times in order, through the same conductor and the same emit as the live path.
+       o: { duration, seed, sampleRate, mood ('none' default), sections, key, bpm, level (MASTER),
+            cues: [{ t, name, opts }], pen: [{ at, ...timeline }], typing: [{ at, ...spec }],
+            air: [{ at, ...spec }], events: [{ t, type: 'stop'|'cancel'|'mute'|'hidden'|'reduced'|'surface',
+            fadeMs, reason, id, surface }], master, probe: 'audio'|'envelope', cal }
+     Resolves { mix, stems: { pen, typing, air, cues }, plan }: the stems are the same plans
+     rendered with the other lanes' gains at 0 and the cues and music muted. */
+  function renderTexturePass(o, solo) {
+    var OAC = global.OfflineAudioContext || global.webkitOfflineAudioContext;
+    if (!OAC) return Promise.reject(new Error('OfflineAudioContext is not available in this browser'));
+    var sr = o.sampleRate || 48000, dur = Math.max(0.2, +o.duration || 5), len = Math.ceil(dur * sr);
+    var seed = o.seed != null ? String(o.seed) : 'sketchy';
+    var ctx = new OAC(4, len, sr);
+    var R = buildMaster(ctx, { offline: true, seed: seed, split: true });
+    var moodName = o.mood == null ? 'none' : o.mood, m = null, i;
+    if (moodName && moodName !== 'none' && MOODS[moodName]) {
+      var fadeIn = o.fadeIn == null ? 1.5 : o.fadeIn, fadeOut = o.fadeOut == null ? 2 : o.fadeOut;
+      var secs = (o.sections || []).slice().sort(function (a, b) { return a.t - b.t; });
+      var first = secs.length && secs[0].t <= 0 ? secs.shift().name : 'calm';
+      m = new Music(R, { seed: seed, mood: moodName, key: o.key, bpm: o.bpm, t0: 0, fadeIn: fadeIn, section: first });
+      for (i = 0; i < secs.length; i++) m.queueSection(secs[i].name, Math.max(0, +secs[i].t || 0));
+      m.fadeOutAt(Math.max(fadeIn, dur - fadeOut), Math.min(fadeOut, dur));
+      R.key = { tonic: m.tonic, scale: m.scale };
+      m.schedule(dur);
+    } else {
+      var H = header(seed, 'sketchbook', o);
+      R.key = { tonic: H.tonic, scale: H.scale };
+    }
+    // a stem: the lanes other than `solo` stay at 0, the cues and the music are muted
+    var texSolo = null;
+    if (solo) {
+      texSolo = solo === 'cues' ? 'none' : solo;
+      R.music.dry.gain.value = 0; R.music.wet.gain.value = 0; R.music.echo.gain.value = 0;
+      if (solo !== 'cues') R.sfxSink.dry.gain.value = 0;
+    }
+    var cueTakes = 0, take = R.sfxSink.take;
+    R.sfxSink.take = function () { cueTakes++; return take.apply(this, arguments); };
+    var clock = { t: 0 };
+    var C = new Conductor(R, { seed: seed, cal: o.cal || SketchySound.texture.cal, probe: o.probe, solo: texSolo,
+      music: function () { return !!m; }, clock: function () { return clock.t; } });
+    var ev = [], k;
+    for (i = 0; i < (o.cues || []).length; i++) ev.push({ t: +o.cues[i].t, k: 0, cue: o.cues[i] });
+    for (i = 0; i < (o.pen || []).length; i++) ev.push({ t: +o.pen[i].at || 0, k: 1, report: o.pen[i] });
+    for (i = 0; i < (o.typing || []).length; i++) ev.push({ t: +o.typing[i].at || 0, k: 2, report: o.typing[i] });
+    for (i = 0; i < (o.air || []).length; i++) ev.push({ t: +o.air[i].at || 0, k: 3, report: o.air[i] });
+    for (i = 0; i < (o.events || []).length; i++) ev.push({ t: +o.events[i].t, k: 4, event: o.events[i] });
+    ev.sort(function (a, b) { return a.t - b.t || a.k - b.k; });
+    var plan = { ids: [], states: [], cues: [] };
+    for (i = 0; i < ev.length; i++) {
+      var e = ev[i];
+      if (!(e.t >= 0 && e.t < dur)) continue;
+      clock.t = e.t;
+      if (e.cue) { plan.cues.push({ t: e.t, name: e.cue.name, admitted: trigger(R, e.cue.name, e.t, e.cue.opts) }); continue; }
+      if (e.report) {
+        var rep = {};
+        for (k in e.report) if (k !== 'at') rep[k] = e.report[k];
+        if (rep.since == null) rep.since = e.t;
+        var id = e.k === 1 ? C.pen(rep) : (e.k === 2 ? C.typing(rep) : C.air(rep));
+        plan.ids.push({ t: e.t, lane: e.k === 1 ? 'pen' : (e.k === 2 ? 'typing' : 'air'), id: id });
+      } else {
+        var x = e.event, type = x.type;
+        if (type === 'stop') C.stopAll(x.fadeMs, x.reason || 'step');
+        else if (type === 'cancel') C.cancel(x.id, x.fadeMs);
+        else if (type === 'mute' || type === 'hidden') C.stopAll(x.fadeMs == null ? 120 : x.fadeMs, type);
+        else if (type === 'reduced') C.reduced(true);
+        else if (type === 'surface') { C.stopAll(160, 'surface'); C.surface = x.surface || null; }
+      }
+      plan.states.push({ t: e.t, state: C.state() });
+    }
+    clock.t = dur;
+    plan.transitions = C.transitions.slice();
+    plan.plans = C.plans.map(function (p) {
+      var row = { id: p.id, lane: p.lane, surface: p.surface, from: p.from, to: p.to, cancelled: !!p.cancelled };
+      if (p.lane === 'typing') { row.t1 = p.t1; row.tEnd = p.tEnd; row.taps = p.taps.map(function (tp) { return { t: tp.t, kind: tp.kind }; }); }
+      return row;
+    });
+    plan.surfaces = {};
+    for (k in C.surfaces) {
+      var sf = C.surfaces[k], pp = sf.penPlan;
+      plan.surfaces[k] = { strokes: sf.strokes.length, activity: pp ? pp.activity : [], window: pp ? pp.window : null, penStrokes: pp ? pp.strokes : [] };
+    }
+    plan.cueSlots = cueTakes;
+    plan.state = C.state();
+
+    var sp1 = ctx.createChannelSplitter(2), sp2 = ctx.createChannelSplitter(2), mg = ctx.createChannelMerger(4);
+    var stereo = function (node) {
+      var g = ctx.createGain();
+      g.channelCount = 2; g.channelCountMode = 'explicit'; g.channelInterpretation = 'speakers';
+      node.connect(g);
+      return g;
+    };
+    stereo(R.premix).connect(sp1); stereo(R.revSend).connect(sp2);
+    sp1.connect(mg, 0, 0); sp1.connect(mg, 1, 1); sp2.connect(mg, 0, 2); sp2.connect(mg, 1, 3);
+    mg.connect(ctx.destination);
+    var level = o.level == null ? MASTER : +o.level, pad = Math.round(0.1 * sr);
+    return runOffline(ctx).then(function (stems) {
+      var d0 = stems.getChannelData(0), d1 = stems.getChannelData(1), w0 = stems.getChannelData(2), w1 = stems.getChannelData(3), j;
+      var wet = null;
+      for (j = 0; j < len; j++) { if (w0[j] !== 0 || w1[j] !== 0) { wet = convolveReverb(w0, w1, sr); break; } }
+      var out = ctx.createBuffer(2, len, sr), a = out.getChannelData(0), b = out.getChannelData(1);
+      for (j = 0; j < len; j++) {
+        a[j] = (d0[j] + (wet ? wet[0][j] : 0)) * level;
+        b[j] = (d1[j] + (wet ? wet[1][j] : 0)) * level;
+      }
+      if (!o.master) return { buffer: out, plan: plan };
+      var ctx3 = new OAC(2, len + pad, sr), src = ctx3.createBufferSource(), chain = masterChain(ctx3);
+      chain.master.gain.value = 1;
+      src.buffer = out; src.connect(chain.master); src.start(pad / sr);
+      return runOffline(ctx3).then(function (full) {
+        var res = ctx.createBuffer(2, len, sr);
+        res.copyToChannel(full.getChannelData(0).subarray(pad), 0);
+        res.copyToChannel(full.getChannelData(1).subarray(pad), 1);
+        return { buffer: res, plan: plan };
+      });
+    });
+  }
+  function renderTextures(o) {
+    o = o || {};
+    var out = { mix: null, stems: {}, plan: null };
+    return renderTexturePass(o, null).then(function (r) {
+      out.mix = r.buffer; out.plan = r.plan;
+      if (o.stems === false) return out;
+      return renderTexturePass(o, 'pen').then(function (p) {
+        out.stems.pen = p.buffer;
+        return renderTexturePass(o, 'typing');
+      }).then(function (t) {
+        out.stems.typing = t.buffer;
+        return renderTexturePass(o, 'air');
+      }).then(function (a) {
+        out.stems.air = a.buffer;
+        return renderTexturePass(o, 'cues');
+      }).then(function (c) {
+        out.stems.cues = c.buffer; out.plan.cueSlotsAlone = c.plan.cueSlots;
+        return out;
+      });
+    });
+  }
+
   // 16-bit stereo PCM WAV. A mono buffer is written to both channels.
   function toWav(buf) {
     var n = buf.length, sr = buf.sampleRate;
@@ -3198,6 +3345,7 @@
       stopAll: textureLive.stopAll,   // every lane; reason: 'step'|'replay'|'close'|'mute'|'hidden'|'reduced'
       state: textureLive.state,       // the conductor's lanes, duck, plans, transitions and pool
       plan: texturePlan,
+      render: renderTextures,         // deterministic offline render: { mix, stems: { pen, typing, air, cues }, plan }
       /* the level trims the rig reads (dev/check-textures.mjs --calibrate adjusts them, then they are frozen in source) */
       cal: { pen: PEN_CAL, typing: TYPE_CAL, air: AIR_CAL, kind: TAP_TRIM },
       shapes: PEN_SHAPES.slice(),
