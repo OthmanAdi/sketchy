@@ -1901,6 +1901,8 @@
     var plan = { id: this.nextId++, lane: 'typing', surface: surface, from: since + p.t1 - 0.04, to: tEnd + 0.37, t1: since + p.t1, tEnd: tEnd,
       taps: taps, next: 0, gains: [], end: p.end };
     this.plans.push(plan); this.ids.push(plan.id);
+    // the plan a restart dropped took its future taps off the record; this one's are on it now
+    this.lastTap = this.lastTapPlanned();
     this.rig();
     this.replanLanes(tc);
     this.arm();
@@ -1916,12 +1918,24 @@
   };
   Conductor.prototype.cancelTyping = function (plan, tc, fade) {
     if (plan.cancelled) return;
-    plan.cancelled = true; plan.next = plan.taps.length; plan.to = tc + fade;
+    plan.cancelled = true; plan.to = tc + fade;
+    // the taps still ahead are dropped; the ones already rendered stay on record for the gap rule
+    plan.taps = plan.taps.slice(0, plan.next);
     var f = Math.max(fade, MIN_RAMP);
     for (var i = 0; i < plan.gains.length; i++) {
       var g = plan.gains[i].g.gain;
       holdAt(g, tc, g.value); g.linearRampToValueAtTime(0, tc + f);
     }
+    this.lastTap = this.lastTapPlanned();
+  };
+  // the latest tap of every plan still on record, so a line restarted before the old one ends taps at once
+  Conductor.prototype.lastTapPlanned = function () {
+    var last = -Infinity;
+    for (var i = 0; i < this.plans.length; i++) {
+      var p = this.plans[i];
+      if (p.lane === 'typing' && p.taps.length) last = Math.max(last, p.taps[p.taps.length - 1].t);
+    }
+    return last;
   };
 
   /* ---- air ---- */
