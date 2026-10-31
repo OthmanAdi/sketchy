@@ -1111,7 +1111,8 @@
       }
     } else if (shape === 'ellipse') {
       m = 1 + 0.28 * Math.sin(Math.PI * p);
-      out.pan += 0.18 * Math.sin(2 * Math.PI * p + st.phi);
+      // 0.24, not the spec's 0.18: the slowing tail of the stroke weighs little, so 0.18 turned only 0.22 peak to peak
+      out.pan += 0.24 * Math.sin(2 * Math.PI * p + st.phi);
       out.b = 1 + 0.12 * Math.cos(2 * Math.PI * p + st.phi);
     } else if (shape === 'curve') m = 1 + 0.06 * Math.sin(2 * Math.PI * 3 * tau);
     else if (shape === 'arrow-shaft') m = 1 - 0.08 * x;
@@ -1681,7 +1682,7 @@
     }
     return this.T;
   };
-  /* Host timelines carry `since`, the performance.now() of their t = 0, in ms. The output
+  /* Host timelines carry `since`, the page's performance clock at their t = 0, in ms. The output
      timestamp maps it onto the context clock; without one the report counts as now.
      Offline, `since` is in render seconds and defaults to the time of the report. */
   Conductor.prototype.hostTime = function (since) {
