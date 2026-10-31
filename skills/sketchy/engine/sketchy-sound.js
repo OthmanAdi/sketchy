@@ -3271,6 +3271,33 @@
     state.want = { mood: mood, seed: n.getAttribute('data-seed') || 'sketchy', auto: true };
   }
 
+  /* A deck opts in to the textures with data-sound-texture on .sk-deck. A step then plays the
+     pen instead of `pencil`: one stroke per sketch the step reveals, from the deck's own
+     draw-in timing (220 ms plus 120 ms per sketch, 520 ms per path, 10 ms between paths). A
+     step without a sketch is one short line. data-sound-shape on a sketch names its shape. */
+  function deckTextures() {
+    var n = doc && doc.querySelector('.sk-deck');
+    return !!(n && n.hasAttribute('data-sound-texture'));
+  }
+  function deckStep(d) {
+    var el = d && d.el, svgs = [], strokes = [], k;
+    if (el && el.querySelectorAll) {
+      svgs = el.matches && el.matches('svg[data-sketch], .sk-chart svg, svg[data-draw]') ? [el]
+        : Array.prototype.slice.call(el.querySelectorAll('svg[data-sketch], .sk-chart svg, svg[data-draw]'));
+    }
+    for (k = 0; k < svgs.length; k++) {
+      // only the first boil variant is traced, so count its paths
+      var paths = Array.prototype.filter.call(svgs[k].querySelectorAll('.sk-path, .sk-hatch, .sk-wash'), function (p) {
+        var v = p.closest ? p.closest('.sk-v') : null;
+        return !v || v.classList.contains('sk-v0') || v.classList.contains('sk-v-only');
+      }).length;
+      strokes.push({ start: 0.22 + k * 0.12, duration: 0.52 + 0.01 * Math.max(0, paths - 1),
+        shape: svgs[k].getAttribute('data-sound-shape') || 'line', easing: [0.35, 0.1, 0.25, 1] });
+    }
+    if (!strokes.length) strokes.push({ start: 0, duration: 0.35, shape: 'line' });
+    textureLive.pen({ strokes: strokes, surface: 'deck', key: 'step:' + (d ? d.index + ':' + d.step : '0') });
+  }
+
   function init() {
     if (!doc) return;
     // events from the deck
@@ -3278,9 +3305,13 @@
       if (!state.on) return;
       var d = e.detail || {}, slide = d.slide, sec = slide && slide.getAttribute && slide.getAttribute('data-music-section');
       if (sec) music.section(sec);
+      if (deckTextures()) textureLive.stopAll(160, 'step');
       play('page');
     });
-    doc.addEventListener('sk:step', function () { if (state.on) play('pencil'); });
+    doc.addEventListener('sk:step', function (e) {
+      if (!state.on) return;
+      if (deckTextures()) deckStep(e.detail); else play('pencil');
+    });
     doc.addEventListener('click', function (e) {
       var n = e.target && e.target.closest ? e.target.closest('[data-sk-sound-toggle]') : null;
       if (n) { e.preventDefault(); toggle(); }

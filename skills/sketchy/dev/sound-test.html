@@ -74,6 +74,26 @@
   </div>
 
   <div class="sk-sheet panel" data-sk="frame">
+    <h2>Textures</h2>
+    <p class="sk-fine">A pen that follows a line, soft key taps under a typed line, a swell of paper air. One lane sounds at a time, every cue ducks them, a stop is always a fade. Press a cue while one plays to hear the duck.</p>
+    <div class="row" id="textures">
+      <button class="sk-btn" data-sk="button" data-pen="line">pen line</button>
+      <button class="sk-btn" data-sk="button" data-pen="curve">pen curve</button>
+      <button class="sk-btn" data-sk="button" data-pen="ellipse">pen ellipse</button>
+      <button class="sk-btn" data-sk="button" data-pen="check">pen check</button>
+      <button class="sk-btn" data-sk="button" data-pen="box">pen box</button>
+      <button class="sk-btn" data-sk="button" data-pen="poly">pen poly</button>
+      <button class="sk-btn" data-sk="button" data-pen="hatch">pen hatch</button>
+      <button class="sk-btn" data-sk="button" data-pen="wash">pen wash</button>
+      <button class="sk-btn" data-sk="button" id="typingSettle">typing, settle</button>
+      <button class="sk-btn" data-sk="button" id="typingReturn">typing, return</button>
+      <button class="sk-btn" data-sk="button" id="air">air</button>
+      <button class="sk-btn" data-sk="button" id="texStop">stop all</button>
+    </div>
+    <p id="texStatus" class="sk-fine"></p>
+  </div>
+
+  <div class="sk-sheet panel" data-sk="frame">
     <h2>Music</h2>
     <div class="row">
       <label>seed <input type="text" id="seed" value="sketchy-demo"></label>
@@ -134,6 +154,26 @@
     });
   });
 
+  document.querySelectorAll('[data-pen]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var shape = b.getAttribute('data-pen');
+      whenOn().then(function () {
+        S.texture.pen({ strokes: [{ start: 0.05, duration: shape === 'wash' ? 0.45 : 0.66, shape: shape, x0: 0.2, x1: 0.8, marks: 6 }], surface: 'deck', key: shape });
+      });
+    });
+  });
+  var LINE = 'How many groups and users are there in total?';
+  document.getElementById('typingSettle').addEventListener('click', function () {
+    whenOn().then(function () { S.texture.typing({ text: LINE, startAfter: 300, charsPerSecond: 34, end: 'settle', surface: 'deck', key: 'settle' }); });
+  });
+  document.getElementById('typingReturn').addEventListener('click', function () {
+    whenOn().then(function () { S.texture.typing({ text: LINE, startAfter: 300, charsPerSecond: 34, end: 'return', surface: 'deck', key: 'return' }); });
+  });
+  document.getElementById('air').addEventListener('click', function () {
+    whenOn().then(function () { S.texture.air({ 'in': 0.9, hold: 1.2, out: 1.6, surface: 'deck', key: 'air' }); });
+  });
+  document.getElementById('texStop').addEventListener('click', function () { S.texture.stopAll(160, 'step'); });
+
   function mark(group, attr, value) {
     document.querySelectorAll(group + ' [' + attr + ']').forEach(function (b) {
       b.classList.toggle('is-on', b.getAttribute(attr) === value);
@@ -161,6 +201,9 @@
     document.getElementById('status').textContent = S.isOn
       ? (i ? i.mood + ', ' + i.key + ' ' + i.mode + ', ' + i.bpm + ' bpm, section ' + i.section : 'sound on, no music')
       : 'sound off';
+    var ts = S.texture.state(), lane = function (n) { return n + ' ' + ts.lanes[n].state + ' ' + ts.lanes[n].gain.toFixed(2); };
+    document.getElementById('texStatus').textContent = (ts.surface ? 'surface ' + ts.surface + ': ' : '') + lane('pen') + ', ' + lane('typing') + ', ' + lane('air')
+      + ', duck ' + (20 * Math.log10(Math.max(ts.duck.depth, 1e-6))).toFixed(1) + ' dB, pool ' + ts.pool.used + '/' + ts.pool.size + ', plans ' + ts.plans.length;
   }, 400);
 
   var lastUrl = null;
